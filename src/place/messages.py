@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Mapping
 
 from .mqtt_client import MqttClient
 
@@ -40,6 +40,20 @@ def shadow_get_topic(thing_name: str) -> str:
 
 def shadow_subscription_topic(thing_name: str) -> str:
     return f"{SHADOW_GET_PREFIX}/{thing_name}/shadow/#"
+
+
+def desired_shadow_update(thing_name: str, fields: Mapping[str, Any]) -> tuple[str, str]:
+    """Build a standard AWS IoT shadow-update message that writes ``desired`` state.
+
+    This is the write side of the shadow transport these helpers already read. It
+    is schema-agnostic — it wraps whatever desired fields the caller supplies; the
+    concrete per-command field names are device-specific and intentionally not
+    baked in here. It only *builds* the (topic, payload) pair — nothing is
+    published, so importing it changes no device state.
+    """
+    topic = f"{SHADOW_GET_PREFIX}/{thing_name}/shadow/update"
+    payload = json.dumps({"state": {"desired": dict(fields)}})
+    return topic, payload
 
 
 def describe_message(topic: str, raw: bytes) -> str:
