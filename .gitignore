@@ -43,3 +43,8 @@ Thumbs.db
 # Local environment/config
 .env
 .env.*
+
+# local secrets & envs (never commit)
+place-secrets.env
+*.env
+.venv/
