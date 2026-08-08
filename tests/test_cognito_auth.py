@@ -149,3 +149,13 @@ async def test_concurrent_refresh_is_single_flight() -> None:
     )
     assert a == b == "access-2"
     assert gw.refresh_calls == 1  # second caller saw the freshly-refreshed token
+
+
+async def test_stale_token_without_refresh_token_returned_as_is() -> None:
+    gw = FakeGateway(login={"AuthenticationResult": _auth_result(RefreshToken=None)})
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("alice", "pw")
+
+    auth._access_token_expiry = 0.0  # force staleness
+    assert await auth.async_get_access_token() == "access-1"
+    assert gw.refresh_calls == 0  # no refresh token → cannot refresh, returns the stale token
