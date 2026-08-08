@@ -76,3 +76,44 @@ def get_tokens_via_srp(
     return aws.authenticate_user()
 
 
+def refresh_tokens(
+    refresh_token: str,
+    *,
+    region: str = REGION,
+    client_id: str = COGNITO_CLIENT_ID,
+    cognito_idp_client: Any | None = None,
+) -> Dict[str, Any]:
+    """Exchange a refresh token for fresh access + id tokens (no client secret)."""
+    client = cognito_idp_client or boto3.client(
+        "cognito-idp", region_name=region, config=Config(signature_version=UNSIGNED)
+    )
+    resp = client.initiate_auth(
+        AuthFlow="REFRESH_TOKEN_AUTH",
+        AuthParameters={"REFRESH_TOKEN": refresh_token},
+        ClientId=client_id,
+    )
+    return resp["AuthenticationResult"]
+
+
+def respond_mfa(
+    *,
+    challenge_name: str,
+    session: str,
+    username: str,
+    code: str,
+    region: str = REGION,
+    client_id: str = COGNITO_CLIENT_ID,
+    cognito_idp_client: Any | None = None,
+) -> Dict[str, Any]:
+    """Answer an MFA challenge with the user's one-time code."""
+    client = cognito_idp_client or boto3.client(
+        "cognito-idp", region_name=region, config=Config(signature_version=UNSIGNED)
+    )
+    code_key = "SMS_MFA_CODE" if challenge_name == "SMS_MFA" else "SOFTWARE_TOKEN_MFA_CODE"
+    return client.respond_to_auth_challenge(
+        ClientId=client_id,
+        ChallengeName=challenge_name,
+        Session=session,
+        ChallengeResponses={"USERNAME": username, code_key: code},
+    )
+
