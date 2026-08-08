@@ -1,3 +1,5 @@
+# ABOUTME: Tests for the transport SigV4 presigner — asserts get_signed_uri builds a
+# ABOUTME: well-formed presigned WSS URL and sources region, endpoint, and expiry from config.
 from __future__ import annotations
 
 from urllib.parse import parse_qs, urlsplit
@@ -36,3 +38,11 @@ def test_region_flows_into_the_credential_scope() -> None:
     cfg = PlaceConfig(region="eu-west-1")
     q = parse_qs(urlsplit(get_signed_uri(cfg, _creds())).query)
     assert "eu-west-1/iotdevicegateway/aws4_request" in q["X-Amz-Credential"][0]
+
+
+def test_endpoint_and_expiry_flow_from_config() -> None:
+    cfg = PlaceConfig(iot_endpoint="iot.example.test", url_expire_sec=120)
+    uri = get_signed_uri(cfg, _creds())
+    assert uri.startswith("wss://iot.example.test/mqtt?")
+    q = parse_qs(urlsplit(uri).query)
+    assert q["X-Amz-Expires"] == ["120"]
