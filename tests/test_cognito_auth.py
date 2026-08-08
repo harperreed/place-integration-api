@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -10,6 +12,7 @@ import pytest
 from place.auth.cognito_auth import CognitoAuth
 from place.config import PlaceConfig
 from place.exceptions import MfaRequired, PlaceAuthError
+from place.models import Credentials
 
 
 class FakeGateway:
@@ -33,7 +36,9 @@ class FakeGateway:
         return self._mfa
 
     def iot_credentials(self, id_token: str, access_token: str):
-        return self._creds
+        if self._creds is None:
+            return None
+        return dataclasses.replace(self._creds)
 
 
 def _auth_result(**over: Any) -> dict[str, Any]:
@@ -159,3 +164,36 @@ async def test_stale_token_without_refresh_token_returned_as_is() -> None:
     auth._access_token_expiry = 0.0  # force staleness
     assert await auth.async_get_access_token() == "access-1"
     assert gw.refresh_calls == 0  # no refresh token → cannot refresh, returns the stale token
+
+
+def _creds(exp: datetime) -> Credentials:
+    return Credentials(
+        access_key_id="AKIA",
+        secret_access_key="s",
+        session_token="t",
+        identity_id="idid",
+        access_token="access-1",
+        expiration=exp,
+    )
+
+
+async def test_iot_credentials_cached_until_near_expiry() -> None:
+    far = datetime.now(timezone.utc) + timedelta(hours=5)
+    gw = FakeGateway(login={"AuthenticationResult": _auth_result()}, creds=_creds(far))
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("alice", "pw")
+
+    first = await auth.async_get_iot_credentials()
+    second = await auth.async_get_iot_credentials()
+    assert first is second  # served from cache
+
+
+async def test_iot_credentials_refresh_when_expired() -> None:
+    past = datetime.now(timezone.utc) - timedelta(minutes=1)
+    gw = FakeGateway(login={"AuthenticationResult": _auth_result()}, creds=_creds(past))
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("alice", "pw")
+
+    first = await auth.async_get_iot_credentials()
+    second = await auth.async_get_iot_credentials()
+    assert first is not second  # stale creds forced a re-exchange each call

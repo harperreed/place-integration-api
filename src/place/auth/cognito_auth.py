@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from aiohttp import ClientSession
 
 from ..config import PlaceConfig
 from ..exceptions import MfaRequired, PlaceAuthError
+from ..models import Credentials
 from .abstract_auth import AbstractAuth
 from .cognito_gateway import CognitoGateway, RealCognitoGateway
 
@@ -34,6 +36,9 @@ class CognitoAuth(AbstractAuth):
         self._mfa_challenge: str | None = None
         self._mfa_session: str | None = None
         self._refresh_lock: asyncio.Lock = asyncio.Lock()
+        self._iot_creds: Credentials | None = None
+        self._iot_creds_expiry: datetime | None = None
+        self._iot_lock: asyncio.Lock = asyncio.Lock()
 
     async def authenticate(self, username: str, password: str) -> None:
         self._username = username
@@ -66,6 +71,24 @@ class CognitoAuth(AbstractAuth):
             self._store_tokens(auth)
             assert self._access_token is not None
             return self._access_token
+
+    async def async_get_iot_credentials(self) -> Credentials:
+        async with self._iot_lock:
+            if self._iot_creds is not None and self._iot_creds_expiry is not None:
+                margin = timedelta(seconds=self._config.creds_refresh_margin_sec)
+                if datetime.now(timezone.utc) < self._iot_creds_expiry - margin:
+                    return self._iot_creds
+            access_token = await self.async_get_access_token()
+            assert self._id_token is not None
+            creds = await asyncio.to_thread(
+                self._gateway.iot_credentials, self._id_token, access_token
+            )
+            self._iot_creds = creds
+            self._iot_creds_expiry = creds.expiration or (
+                datetime.now(timezone.utc)
+                + timedelta(seconds=self._config.url_expire_sec)
+            )
+            return creds
 
     def _consume_auth_response(self, result: dict[str, Any]) -> None:
         challenge = result.get("ChallengeName")
