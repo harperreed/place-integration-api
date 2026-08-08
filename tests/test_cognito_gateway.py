@@ -5,7 +5,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+import pytest
+
+from place.auth import cognito_gateway
+from place.auth.cognito_gateway import RealCognitoGateway
 from place.auth.srp_auth import get_iot_credentials, refresh_tokens, respond_mfa
+from place.config import PlaceConfig
 
 
 class _FakeIdentityClient:
@@ -91,3 +96,79 @@ def test_respond_mfa_uses_software_token_code_key() -> None:
         "SOFTWARE_TOKEN_MFA_CODE": "123456",
     }
     assert result["AuthenticationResult"] == {"AccessToken": "a"}
+
+
+def test_real_gateway_passes_config_fields_to_srp_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RealCognitoGateway must forward the correct PlaceConfig field to each srp_auth call."""
+    calls: dict[str, dict[str, Any]] = {}
+
+    def _record(name: str, retval: Any):
+        def _fn(*args: Any, **kwargs: Any) -> Any:
+            calls[name] = {"args": args, "kwargs": kwargs}
+            return retval
+
+        return _fn
+
+    monkeypatch.setattr(cognito_gateway.srp_auth, "get_tokens_via_srp", _record("srp_login", {"ok": 1}))
+    monkeypatch.setattr(cognito_gateway.srp_auth, "refresh_tokens", _record("refresh", {"ok": 2}))
+    monkeypatch.setattr(cognito_gateway.srp_auth, "respond_mfa", _record("mfa", {"ok": 3}))
+    monkeypatch.setattr(cognito_gateway.srp_auth, "get_iot_credentials", _record("iot", "CREDS"))
+
+    config = PlaceConfig(
+        region="R-test",
+        cognito_user_pool_id="UP-test",
+        cognito_client_id="CID-test",
+        cognito_identity_pool_id="IP-test",
+    )
+    gw = RealCognitoGateway(config)
+
+    gw.srp_login("alice", "pw")
+    assert calls["srp_login"]["kwargs"] == {
+        "user_pool_id": "UP-test",
+        "client_id": "CID-test",
+        "username": "alice",
+        "password": "pw",
+        "region": "R-test",
+    }
+
+    gw.refresh("refresh-xyz")
+    assert calls["refresh"]["args"] == ("refresh-xyz",)
+    assert calls["refresh"]["kwargs"] == {"region": "R-test", "client_id": "CID-test"}
+
+    gw.respond_mfa(challenge_name="SMS_MFA", session="s", username="alice", code="000")
+    assert calls["mfa"]["kwargs"] == {
+        "challenge_name": "SMS_MFA",
+        "session": "s",
+        "username": "alice",
+        "code": "000",
+        "region": "R-test",
+        "client_id": "CID-test",
+    }
+
+    creds = gw.iot_credentials("id-tok", "acc-tok")
+    assert creds == "CREDS"
+    assert calls["iot"]["args"] == ("id-tok", "acc-tok")
+    assert calls["iot"]["kwargs"] == {
+        "region": "R-test",
+        "user_pool_id": "UP-test",
+        "identity_pool_id": "IP-test",
+    }
+
+
+def test_respond_mfa_uses_sms_code_key_for_sms_challenge() -> None:
+    client = _FakeIdpClient(respond={"AuthenticationResult": {"AccessToken": "a"}})
+    respond_mfa(
+        challenge_name="SMS_MFA",
+        session="sess",
+        username="bob",
+        code="654321",
+        region="us-east-2",
+        client_id="cid",
+        cognito_idp_client=client,
+    )
+    name, kwargs = client.calls[0]
+    assert name == "respond_to_auth_challenge"
+    assert kwargs["ChallengeName"] == "SMS_MFA"
+    assert kwargs["ChallengeResponses"] == {"USERNAME": "bob", "SMS_MFA_CODE": "654321"}
