@@ -101,14 +101,6 @@ class MqttTransport(Protocol):
 TransportFactory = Callable[[PlaceConfig, Credentials], MqttTransport]
 
 
-def _as_bytes(payload: object) -> bytes:
-    if isinstance(payload, bytes):
-        return payload
-    if isinstance(payload, str):
-        return payload.encode("utf-8")
-    return str(payload).encode("utf-8")
-
-
 class AiomqttTransport:
     """MqttTransport backed by aiomqtt over a SigV4-presigned AWS IoT WebSocket."""
 
@@ -147,4 +139,4 @@ class AiomqttTransport:
 
     async def messages(self) -> AsyncIterator[tuple[str, bytes]]:
         async for message in self._client.messages:
-            yield str(message.topic), _as_bytes(message.payload)
+            yield str(message.topic), message.payload
