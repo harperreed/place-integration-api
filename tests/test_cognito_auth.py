@@ -24,6 +24,7 @@ class FakeGateway:
         self._refresh = refresh or {}
         self._creds = creds
         self.refresh_calls = 0
+        self.iot_calls = 0
 
     def srp_login(self, username: str, password: str) -> dict[str, Any]:
         return self._login
@@ -36,6 +37,7 @@ class FakeGateway:
         return self._mfa
 
     def iot_credentials(self, id_token: str, access_token: str):
+        self.iot_calls += 1
         if self._creds is None:
             return None
         return dataclasses.replace(self._creds)
@@ -197,3 +199,35 @@ async def test_iot_credentials_refresh_when_expired() -> None:
     first = await auth.async_get_iot_credentials()
     second = await auth.async_get_iot_credentials()
     assert first is not second  # stale creds forced a re-exchange each call
+
+
+async def test_iot_credentials_single_flight_under_concurrency() -> None:
+    far = datetime.now(timezone.utc) + timedelta(hours=5)
+    gw = FakeGateway(login={"AuthenticationResult": _auth_result()}, creds=_creds(far))
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("alice", "pw")
+
+    a, b = await asyncio.gather(
+        auth.async_get_iot_credentials(), auth.async_get_iot_credentials()
+    )
+    assert a is b  # single-flight: one exchange, both callers get the one cached object
+    assert gw.iot_calls == 1  # second caller saw the freshly-cached creds, not a second exchange
+
+
+async def test_iot_credentials_uses_expiry_fallback_when_response_has_none() -> None:
+    gw = FakeGateway(
+        login={"AuthenticationResult": _auth_result()},
+        creds=Credentials(
+            access_key_id="AKIA",
+            secret_access_key="s",
+            session_token="t",
+            identity_id="idid",
+        ),  # expiration=None → exercises the url_expire_sec fallback
+    )
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("alice", "pw")
+
+    first = await auth.async_get_iot_credentials()
+    second = await auth.async_get_iot_credentials()
+    assert first is second  # fallback expiry (now + url_expire_sec) keeps creds fresh → served from cache
+    assert gw.iot_calls == 1
