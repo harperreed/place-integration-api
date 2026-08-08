@@ -2,10 +2,11 @@
 # ABOUTME: MqttTransport seam over aiomqtt, and the self-healing PlaceConnection loop.
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime, timezone
 from types import TracebackType
 from typing import Protocol
@@ -14,6 +15,7 @@ from urllib.parse import quote
 import aiomqtt
 
 from .config import ALGORITHM, PATH, SCHEME, SERVICE, PlaceConfig
+from .exceptions import PlaceConnectionError
 from .models import Credentials
 
 
@@ -140,3 +142,70 @@ class AiomqttTransport:
     async def messages(self) -> AsyncIterator[tuple[str, bytes]]:
         async for message in self._client.messages:
             yield str(message.topic), message.payload
+
+
+class IotCredentialsProvider(Protocol):
+    """The auth surface PlaceConnection needs: mint IoT credentials on demand."""
+
+    async def async_get_iot_credentials(self) -> Credentials: ...
+
+
+class PlaceConnection:
+    """A self-healing MQTT session: (re)connects, subscribes, and pumps messages."""
+
+    def __init__(
+        self,
+        config: PlaceConfig,
+        auth: IotCredentialsProvider,
+        *,
+        transport_factory: TransportFactory,
+        on_message: Callable[[str, bytes], None],
+        on_state: Callable[[bool], None] | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        jitter: Callable[[float], float] | None = None,
+    ) -> None:
+        self._config: PlaceConfig = config
+        self._auth: IotCredentialsProvider = auth
+        self._transport_factory: TransportFactory = transport_factory
+        self._on_message: Callable[[str, bytes], None] = on_message
+        self._on_state: Callable[[bool], None] | None = on_state
+        self._sleep: Callable[[float], Awaitable[None]] = sleep
+        self._jitter: Callable[[float], float] = jitter or (lambda d: d)
+        self._subscriptions: list[str] = []
+        self._connect_publishes: list[tuple[str, bytes]] = []
+        self._transport: MqttTransport | None = None
+        self._stopped: bool = False
+
+    def add_subscription(self, topic: str) -> None:
+        if topic not in self._subscriptions:
+            self._subscriptions.append(topic)
+
+    def add_connect_publish(self, topic: str, payload: bytes = b"") -> None:
+        self._connect_publishes.append((topic, payload))
+
+    def stop(self) -> None:
+        self._stopped = True
+
+    async def publish(self, topic: str, payload: bytes = b"") -> None:
+        if self._transport is None:
+            raise PlaceConnectionError("not connected")
+        await self._transport.publish(topic, payload)
+
+    async def run(self) -> None:
+        while not self._stopped:
+            creds = await self._auth.async_get_iot_credentials()
+            async with self._transport_factory(self._config, creds) as transport:
+                self._transport = transport
+                try:
+                    for topic in self._subscriptions:
+                        await transport.subscribe(topic)
+                    for topic, payload in self._connect_publishes:
+                        await transport.publish(topic, payload)
+                    if self._on_state:
+                        self._on_state(True)
+                    async for topic, payload in transport.messages():
+                        self._on_message(topic, payload)
+                finally:
+                    self._transport = None
+                    if self._on_state:
+                        self._on_state(False)
