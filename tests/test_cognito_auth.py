@@ -2,6 +2,7 @@
 # ABOUTME: and MFA-completion login, driven against a hand-written FakeGateway.
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -119,3 +120,32 @@ async def test_submit_mfa_raises_when_no_challenge_pending() -> None:
 
     with pytest.raises(PlaceAuthError):
         await auth.submit_mfa("123456")
+
+
+async def test_access_token_refreshes_when_expired() -> None:
+    gw = FakeGateway(
+        login={"AuthenticationResult": _auth_result()},
+        refresh={"AccessToken": "access-2", "IdToken": "id-2", "ExpiresIn": 3600},
+    )
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("alice", "pw")
+
+    auth._access_token_expiry = 0.0  # force staleness
+    assert await auth.async_get_access_token() == "access-2"
+    assert gw.refresh_calls == 1
+
+
+async def test_concurrent_refresh_is_single_flight() -> None:
+    gw = FakeGateway(
+        login={"AuthenticationResult": _auth_result()},
+        refresh={"AccessToken": "access-2", "IdToken": "id-2", "ExpiresIn": 3600},
+    )
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("alice", "pw")
+    auth._access_token_expiry = 0.0
+
+    a, b = await asyncio.gather(
+        auth.async_get_access_token(), auth.async_get_access_token()
+    )
+    assert a == b == "access-2"
+    assert gw.refresh_calls == 1  # second caller saw the freshly-refreshed token

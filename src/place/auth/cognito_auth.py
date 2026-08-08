@@ -53,9 +53,19 @@ class CognitoAuth(AbstractAuth):
         self._consume_auth_response(result)
 
     async def async_get_access_token(self) -> str:
-        if self._access_token is None:
-            raise PlaceAuthError("not authenticated; call authenticate() first")
-        return self._access_token
+        async with self._refresh_lock:
+            if self._access_token is not None and time.time() < (
+                self._access_token_expiry - self._config.token_refresh_margin_sec
+            ):
+                return self._access_token
+            if self._refresh_token is None:
+                if self._access_token is None:
+                    raise PlaceAuthError("not authenticated; call authenticate() first")
+                return self._access_token
+            auth = await asyncio.to_thread(self._gateway.refresh, self._refresh_token)
+            self._store_tokens(auth)
+            assert self._access_token is not None
+            return self._access_token
 
     def _consume_auth_response(self, result: dict[str, Any]) -> None:
         challenge = result.get("ChallengeName")
