@@ -6,7 +6,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from place.config import PlaceConfig
 from place.models import Credentials
-from place.transport import get_signed_uri
+from place.transport import get_signed_uri, websocket_options
 
 
 def _creds() -> Credentials:
@@ -46,3 +46,10 @@ def test_endpoint_and_expiry_flow_from_config() -> None:
     assert uri.startswith("wss://iot.example.test/mqtt?")
     q = parse_qs(urlsplit(uri).query)
     assert q["X-Amz-Expires"] == ["120"]
+
+
+def test_websocket_options_extracts_path_and_host_header() -> None:
+    signed = "wss://host.example/mqtt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=abc"
+    path, headers = websocket_options(signed, "host.example")
+    assert path == "/mqtt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=abc"
+    assert headers == {"Host": "host.example"}

@@ -23,7 +23,8 @@ dependencies = [
   "paho-mqtt",
   "six",
   "python-decouple",
-  "PyJWT"
+  "PyJWT",
+  "aiomqtt>=2.5.1",
 ]
 
 [project.optional-dependencies]

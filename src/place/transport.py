@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import uuid
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timezone
+from types import TracebackType
+from typing import Protocol
 from urllib.parse import quote
+
+import aiomqtt
 
 from .config import ALGORITHM, PATH, SCHEME, SERVICE, PlaceConfig
 from .models import Credentials
@@ -69,3 +75,76 @@ def get_signed_uri(config: PlaceConfig, credentials: Credentials) -> str:
     query["X-Amz-Security-Token"] = session_token
     query_string = "&".join(f"{enc(k)}={enc(v)}" for k, v in sorted(query.items()))
     return f"{SCHEME}://{host}{PATH}?{query_string}"
+
+
+def websocket_options(signed_uri: str, host: str) -> tuple[str, dict[str, str]]:
+    """Split a signed WSS URL into the aiomqtt websocket path (with query) + Host header."""
+    path_with_query = PATH + signed_uri.split(PATH, 1)[1]
+    return path_with_query, {"Host": host}
+
+
+class MqttTransport(Protocol):
+    """A single MQTT connection lifecycle: enter, (un)subscribe, publish, stream messages."""
+
+    async def __aenter__(self) -> "MqttTransport": ...
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None: ...
+    async def subscribe(self, topic: str, qos: int = 1) -> None: ...
+    async def publish(self, topic: str, payload: bytes = b"", qos: int = 1) -> None: ...
+    def messages(self) -> AsyncIterator[tuple[str, bytes]]: ...
+
+
+TransportFactory = Callable[[PlaceConfig, Credentials], MqttTransport]
+
+
+def _as_bytes(payload: object) -> bytes:
+    if isinstance(payload, bytes):
+        return payload
+    if isinstance(payload, str):
+        return payload.encode("utf-8")
+    return str(payload).encode("utf-8")
+
+
+class AiomqttTransport:
+    """MqttTransport backed by aiomqtt over a SigV4-presigned AWS IoT WebSocket."""
+
+    def __init__(self, config: PlaceConfig, credentials: Credentials) -> None:
+        signed_uri = get_signed_uri(config, credentials)
+        path, headers = websocket_options(signed_uri, config.iot_endpoint)
+        client_id = f"{credentials.identity_id}-{uuid.uuid4()}"
+        self._client: aiomqtt.Client = aiomqtt.Client(
+            hostname=config.iot_endpoint,
+            port=443,
+            identifier=client_id,
+            transport="websockets",
+            websocket_path=path,
+            websocket_headers=headers,
+            tls_params=aiomqtt.TLSParameters(),
+            keepalive=config.keep_alive_sec,
+        )
+
+    async def __aenter__(self) -> "AiomqttTransport":
+        _ = await self._client.__aenter__()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        await self._client.__aexit__(exc_type, exc, tb)
+
+    async def subscribe(self, topic: str, qos: int = 1) -> None:
+        _ = await self._client.subscribe(topic, qos=qos)
+
+    async def publish(self, topic: str, payload: bytes = b"", qos: int = 1) -> None:
+        await self._client.publish(topic, payload=payload, qos=qos)
+
+    async def messages(self) -> AsyncIterator[tuple[str, bytes]]:
+        async for message in self._client.messages:
+            yield str(message.topic), _as_bytes(message.payload)
