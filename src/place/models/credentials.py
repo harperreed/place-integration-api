@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 
 @dataclass
@@ -10,4 +11,5 @@ class Credentials:
     session_token: str
     identity_id: str
     access_token: str | None = None
+    expiration: datetime | None = None
 
