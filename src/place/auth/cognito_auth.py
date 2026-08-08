@@ -33,7 +33,7 @@ class CognitoAuth(AbstractAuth):
         self._access_token_expiry: float = 0.0
         self._mfa_challenge: str | None = None
         self._mfa_session: str | None = None
-        self._refresh_lock = asyncio.Lock()
+        self._refresh_lock: asyncio.Lock = asyncio.Lock()
 
     async def authenticate(self, username: str, password: str) -> None:
         self._username = username

@@ -8,7 +8,7 @@ import pytest
 
 from place.auth.cognito_auth import CognitoAuth
 from place.config import PlaceConfig
-from place.exceptions import MfaRequired
+from place.exceptions import MfaRequired, PlaceAuthError
 
 
 class FakeGateway:
@@ -77,3 +77,45 @@ async def test_submit_mfa_completes_login() -> None:
     await auth.submit_mfa("123456")
 
     assert await auth.async_get_access_token() == "access-mfa"
+
+
+async def test_authenticate_raises_mfa_required_for_sms_challenge() -> None:
+    gw = FakeGateway(login={"ChallengeName": "SMS_MFA", "Session": "sess-sms"})
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(MfaRequired) as excinfo:
+        await auth.authenticate("alice", "pw")
+    assert excinfo.value.challenge_name == "SMS_MFA"
+    assert excinfo.value.session == "sess-sms"
+
+
+async def test_authenticate_retains_refresh_token_when_response_omits_it() -> None:
+    gw = FakeGateway(login={"AuthenticationResult": _auth_result()})
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+
+    await auth.authenticate("alice", "pw")
+    assert auth._refresh_token == "refresh-1"
+
+    gw._login = {
+        "AuthenticationResult": _auth_result(AccessToken="access-2", RefreshToken=None)
+    }
+    await auth.authenticate("alice", "pw")
+
+    assert auth._access_token == "access-2"
+    assert auth._refresh_token == "refresh-1"
+
+
+async def test_async_get_access_token_raises_when_not_authenticated() -> None:
+    gw = FakeGateway()
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(PlaceAuthError):
+        await auth.async_get_access_token()
+
+
+async def test_submit_mfa_raises_when_no_challenge_pending() -> None:
+    gw = FakeGateway()
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(PlaceAuthError):
+        await auth.submit_mfa("123456")
