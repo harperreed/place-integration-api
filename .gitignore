@@ -36,6 +36,9 @@ htmlcov/
 .tox/
 .ruff_cache/
 
+# uv (library: the lock pins local dev only; the wheel pins via pyproject ranges)
+uv.lock
+
 # OS/filesystem
 .DS_Store
 Thumbs.db
