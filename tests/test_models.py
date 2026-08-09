@@ -82,6 +82,19 @@ REPORTED_EXTRAS_SHADOW = {
     }
 }
 
+# Device health sub-objects. faults and endOfLife are nested objects whose full
+# key set varies by model/firmware, so the model passes them through as-is rather
+# than half-typing a schema we haven't pinned. The keys here are real, from the
+# live 5-device capture (see the gentex-place-shadow-schema notes).
+HEALTH_SHADOW = {
+    "state": {
+        "reported": {
+            "faults": {"stuckButton": False, "corruptNvm": False, "coSens": True},
+            "endOfLife": {"system": False},
+        }
+    }
+}
+
 
 # --- The three hazards the integration has always consumed -------------------
 
@@ -296,3 +309,45 @@ def test_merge_updates_methane_and_flags_in_place() -> None:
     assert s.methane_ppm == 12           # updated
     assert s.in_chatty_mode is True      # updated
     assert s.battery_low_pre_warning is True  # unchanged
+
+
+# --- Device health: faults + end-of-life (passthrough objects) ---------------
+
+def test_from_shadow_parses_health_objects() -> None:
+    """faults and endOfLife pass through as the objects the device sent."""
+    s = PlaceDeviceShadow.from_shadow(HEALTH_SHADOW)
+
+    assert s.faults == {"stuckButton": False, "corruptNvm": False, "coSens": True}
+    assert s.end_of_life == {"system": False}
+
+
+def test_health_objects_absent_are_none() -> None:
+    """A device that omits faults/endOfLife leaves them None."""
+    s = PlaceDeviceShadow.from_shadow({"state": {"reported": {"smokeAlarmStatus": 0}}})
+
+    assert s.faults is None
+    assert s.end_of_life is None
+
+
+def test_health_objects_reject_non_dict() -> None:
+    """A non-object value is treated as absent (None), never a scalar."""
+    s = PlaceDeviceShadow.from_shadow(
+        {"state": {"reported": {"faults": "nope", "endOfLife": 3}}}
+    )
+
+    assert s.faults is None
+    assert s.end_of_life is None
+
+
+def test_merge_updates_health_objects_in_place() -> None:
+    """A sparse update to a health object replaces only that object."""
+    s = PlaceDeviceShadow.from_shadow(HEALTH_SHADOW)
+
+    s.merge({"state": {"reported": {"endOfLife": {"system": True}}}})
+
+    assert s.end_of_life == {"system": True}  # updated
+    assert s.faults == {                       # unchanged
+        "stuckButton": False,
+        "corruptNvm": False,
+        "coSens": True,
+    }

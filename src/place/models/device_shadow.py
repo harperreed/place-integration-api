@@ -14,6 +14,9 @@ model parses the whole of it:
 * App-known reported fields a base PL1AS didn't emit in our capture — a methane
   reading (the gas behind the explosive-gas hazard) and the battery-pre-low and
   chatty-mode flags — parsing the same way and staying ``None`` when absent.
+* Device health sub-objects — ``faults`` (per-sensor fault bits) and
+  ``endOfLife`` (detector expiry) — passed through as raw dicts, since their
+  full schema varies by model and isn't yet pinned.
 
 Each added field is ``None`` (telemetry) or ``NOT_PRESENT`` (hazards) when a
 given model doesn't emit it, so absence stays distinct from a real zero.
@@ -66,6 +69,16 @@ def _bool(value: Any) -> bool | None:
     never coerced, so an absent flag stays distinct from a real False.
     """
     return value if isinstance(value, bool) else None
+
+
+def _obj(value: Any) -> dict[str, Any] | None:
+    """Return a nested JSON object unchanged, or None if absent/not an object.
+
+    Used for reported sub-objects whose full schema varies by model/firmware
+    (faults, endOfLife) — passed through as-is rather than half-typed against a
+    schema we haven't pinned. Promote to a typed model once it's nailed down.
+    """
+    return value if isinstance(value, dict) else None
 
 
 # Live status fields a real PL1AS reports, mapped snake_case attr -> shadow key.
@@ -151,6 +164,9 @@ class PlaceDeviceShadow:
     # Reported device-state flags (None when a model doesn't emit them).
     battery_low_pre_warning: bool | None = None
     in_chatty_mode: bool | None = None
+    # Device health sub-objects, passed through as-is (schema varies by model).
+    faults: dict[str, Any] | None = None
+    end_of_life: dict[str, Any] | None = None
 
     @staticmethod
     def from_shadow(shadow: dict[str, Any]) -> "PlaceDeviceShadow":
@@ -168,6 +184,8 @@ class PlaceDeviceShadow:
             night_light=_parse_night_light(reported.get("nightLightSettings")),
             battery_low_pre_warning=_bool(reported.get("batteryLowPreWarning")),
             in_chatty_mode=_bool(reported.get("inChattyMode")),
+            faults=_obj(reported.get("faults")),
+            end_of_life=_obj(reported.get("endOfLife")),
             **{attr: _num(reported.get(key)) for attr, key in _TELEMETRY.items()},
         )
 
@@ -197,3 +215,7 @@ class PlaceDeviceShadow:
             self.battery_low_pre_warning = _bool(reported["batteryLowPreWarning"])
         if "inChattyMode" in reported:
             self.in_chatty_mode = _bool(reported["inChattyMode"])
+        if "faults" in reported:
+            self.faults = _obj(reported["faults"])
+        if "endOfLife" in reported:
+            self.end_of_life = _obj(reported["endOfLife"])
