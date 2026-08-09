@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import datetime, timedelta, timezone
 from types import TracebackType
 
 import pytest
@@ -277,3 +278,43 @@ async def test_backoff_is_capped() -> None:
 
 async def _noop_sleep(record: list[float], delay: float) -> None:
     record.append(delay)
+
+
+def test_seconds_until_refresh_uses_margin() -> None:
+    def _factory_unused(cfg: PlaceConfig, creds: Credentials) -> MqttTransport:
+        _ = cfg
+        _ = creds
+        raise AssertionError("transport_factory must not be called in this test")
+
+    conn = PlaceConnection(
+        PlaceConfig(creds_refresh_margin_sec=600),
+        FakeAuth(_creds()),
+        transport_factory=_factory_unused,
+        on_message=lambda t, p: None,
+    )
+    far = _creds()
+    far.expiration = datetime.now(timezone.utc) + timedelta(seconds=3600)
+    secs = conn._seconds_until_refresh(far)  # pyright: ignore[reportPrivateUsage]
+    assert secs is not None and 2900 < secs <= 3000
+
+    unknown = _creds()  # expiration is None
+    assert conn._seconds_until_refresh(unknown) is None  # pyright: ignore[reportPrivateUsage]
+
+    stale = _creds()
+    stale.expiration = datetime.now(timezone.utc) - timedelta(seconds=10)
+    # clamped, never negative
+    assert conn._seconds_until_refresh(stale) == 0.0  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_each_connect_fetches_fresh_credentials() -> None:
+    auth = FakeAuth(_creds())
+    sleep_fn: Callable[[float], Awaitable[None]] = lambda d: _noop_sleep([], d)
+    conn = PlaceConnection(
+        PlaceConfig(reconnect_min_sec=0.0, reconnect_max_sec=0.0),
+        auth,
+        transport_factory=_flaky_factory(1, lambda: conn.stop),
+        on_message=lambda t, p: None,
+        sleep=sleep_fn,
+    )
+    await conn.run()
+    assert auth.calls == 2  # one failed connect + one successful, each fetched creds

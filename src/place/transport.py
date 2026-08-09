@@ -192,6 +192,12 @@ class PlaceConnection:
             raise PlaceConnectionError("not connected")
         await self._transport.publish(topic, payload)
 
+    def _seconds_until_refresh(self, creds: Credentials) -> float | None:
+        if creds.expiration is None:
+            return None
+        remaining = (creds.expiration - datetime.now(timezone.utc)).total_seconds()
+        return max(0.0, remaining - self._config.creds_refresh_margin_sec)
+
     async def run(self) -> None:
         attempt = 0
         while not self._stopped:
@@ -206,8 +212,12 @@ class PlaceConnection:
                             await transport.publish(topic, payload)
                         if self._on_state:
                             self._on_state(True)
-                        async for topic, payload in transport.messages():
-                            self._on_message(topic, payload)
+                        try:
+                            async with asyncio.timeout(self._seconds_until_refresh(creds)):
+                                async for topic, payload in transport.messages():
+                                    self._on_message(topic, payload)
+                        except TimeoutError:
+                            pass  # proactive refresh: reconnect with fresh credentials
                     finally:
                         self._transport = None
                         if self._on_state:
