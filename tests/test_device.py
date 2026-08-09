@@ -73,3 +73,21 @@ def test_from_discovery_without_thing_name_is_rejected() -> None:
     bad = DiscoverDevice.from_dict({"deviceId": "dev-1"})
     with pytest.raises(ValueError):
         _ = PlaceDevice.from_discovery(bad)
+
+
+def test_set_online_notifies_only_on_change() -> None:
+    dev = PlaceDevice.from_discovery(_discover())  # _discover() → online=True
+    seen: list[PlaceDevice] = []
+    _ = dev.add_listener(seen.append)
+
+    dev.set_online(True)  # no change (already True) → must NOT notify
+    assert dev.online is True
+    assert seen == []
+
+    dev.set_online(False)  # changed → notifies once
+    assert dev.online is False
+    assert seen == [dev]
+
+    dev.set_online(False)  # no change → must NOT notify again
+    assert dev.online is False
+    assert seen == [dev]
