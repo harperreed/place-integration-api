@@ -2,6 +2,7 @@
 # ABOUTME: publish guard, subscription dedup, add-order replay, and reconnect backoff on MqttError.
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
@@ -318,3 +319,96 @@ async def test_each_connect_fetches_fresh_credentials() -> None:
     )
     await conn.run()
     assert auth.calls == 2  # one failed connect + one successful, each fetched creds
+
+
+class ExpiringAuth:
+    """Yields fresh creds with a scripted expiration per call, tracking call count.
+
+    Scripting the expiration per connect lets a test give the first connect an
+    already-past expiry (immediate refresh deadline) and the second no expiry at
+    all (no deadline), so the second connect can stop the loop without racing a
+    timeout.
+    """
+
+    def __init__(self, expirations: list[datetime | None]) -> None:
+        self._expirations: list[datetime | None] = expirations
+        self.calls: int = 0
+
+    async def async_get_iot_credentials(self) -> Credentials:
+        creds = _creds()
+        creds.expiration = self._expirations[self.calls]
+        self.calls += 1
+        return creds
+
+
+class HangingTransport:
+    """messages() blocks, then falls through to stop the loop.
+
+    When the refresh-deadline wiring works, `asyncio.timeout` cancels the sleep
+    almost immediately and the pump cycles via TimeoutError — the stop line never
+    runs. If that wiring regresses (no deadline fires), the sleep completes and the
+    stop line ends the loop, so the test fails on the ``auth.calls`` assertion
+    instead of hanging.
+    """
+
+    def __init__(self, stop: Callable[[], None]) -> None:
+        self._stop: Callable[[], None] = stop
+
+    async def __aenter__(self) -> "HangingTransport":
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        return None
+
+    async def subscribe(self, topic: str, qos: int = 1) -> None:
+        _ = topic
+        _ = qos
+        return None
+
+    async def publish(self, topic: str, payload: bytes = b"", qos: int = 1) -> None:
+        _ = topic
+        _ = payload
+        _ = qos
+        return None
+
+    async def messages(self) -> AsyncIterator[tuple[str, bytes]]:
+        await asyncio.sleep(1)  # cancelled ~instantly by the refresh deadline when wired
+        self._stop()  # fallback: a regressed (un-wrapped) pump still ends the loop
+        for _ in ():  # never runs; makes this an async generator
+            yield ("", b"")
+
+
+async def test_refresh_deadline_triggers_proactive_reconnect() -> None:
+    subs: list[str] = []
+    published: list[tuple[str, bytes]] = []
+    slept: list[float] = []
+    sleep_fn: Callable[[float], Awaitable[None]] = lambda d: _noop_sleep(slept, d)
+    past = datetime.now(timezone.utc) - timedelta(seconds=10)
+    auth = ExpiringAuth([past, None])  # cycle 1: immediate deadline; cycle 2: no deadline
+    state = {"n": 0}
+
+    def factory(cfg: PlaceConfig, creds: Credentials) -> MqttTransport:
+        _ = cfg
+        _ = creds
+        state["n"] += 1
+        if state["n"] == 1:
+            return HangingTransport(conn.stop)
+        return ScriptedTransport([], subs, published, conn.stop)
+
+    conn = PlaceConnection(
+        PlaceConfig(),
+        auth,
+        transport_factory=factory,
+        on_message=lambda t, p: None,
+        sleep=sleep_fn,
+    )
+
+    await conn.run()
+
+    assert auth.calls == 2  # the pump cycled once — a second connect happened
+    assert slept == []  # no backoff sleep: the cycle came from the timeout, not MqttError
