@@ -1,11 +1,12 @@
-# ABOUTME: Tests for PlaceConnection — the happy-path connect/subscribe/publish/dispatch
-# ABOUTME: cycle, the not-connected publish guard, subscription dedup, and add-order replay.
+# ABOUTME: Tests for PlaceConnection — connect/subscribe/publish/dispatch, the not-connected
+# ABOUTME: publish guard, subscription dedup, add-order replay, and reconnect backoff on MqttError.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from types import TracebackType
 
 import pytest
+from aiomqtt import MqttError
 
 from place.config import PlaceConfig
 from place.exceptions import PlaceConnectionError
@@ -192,3 +193,87 @@ async def test_publish_while_connected_delegates_to_transport() -> None:
     await conn.run()
 
     assert published == [("$aws/things/T/shadow/get", b"mid-stream")]
+
+
+class FlakyTransport:
+    """Fails with MqttError for the first `fail_times` connects, then drains and stops."""
+
+    def __init__(self, attempt: int, fail_times: int, stop: Callable[[], None]) -> None:
+        self._attempt: int = attempt
+        self._fail_times: int = fail_times
+        self._stop: Callable[[], None] = stop
+
+    async def __aenter__(self) -> "FlakyTransport":
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        return None
+
+    async def subscribe(self, topic: str, qos: int = 1) -> None:
+        _ = topic
+        _ = qos
+        return None
+
+    async def publish(self, topic: str, payload: bytes = b"", qos: int = 1) -> None:
+        _ = topic
+        _ = payload
+        _ = qos
+        return None
+
+    async def messages(self) -> AsyncIterator[tuple[str, bytes]]:
+        if self._attempt <= self._fail_times:
+            raise MqttError("dropped")
+        self._stop()
+        for _ in ():  # never runs; the empty loop makes this an async generator
+            yield ("", b"")
+
+
+def _flaky_factory(
+    fail_times: int, stop_getter: Callable[[], Callable[[], None]]
+) -> TransportFactory:
+    state = {"n": 0}
+
+    def factory(cfg: PlaceConfig, creds: Credentials) -> MqttTransport:
+        _ = cfg
+        _ = creds
+        state["n"] += 1
+        return FlakyTransport(state["n"], fail_times, stop_getter())
+
+    return factory
+
+
+async def test_backoff_grows_then_connects() -> None:
+    slept: list[float] = []
+    sleep_fn: Callable[[float], Awaitable[None]] = lambda d: _noop_sleep(slept, d)
+    conn = PlaceConnection(
+        PlaceConfig(reconnect_min_sec=1.0, reconnect_max_sec=60.0),
+        FakeAuth(_creds()),
+        transport_factory=_flaky_factory(2, lambda: conn.stop),
+        on_message=lambda t, p: None,
+        sleep=sleep_fn,
+    )
+    await conn.run()
+    assert slept == [1.0, 2.0]  # 2 failures -> two backoff sleeps, then success
+
+
+async def test_backoff_is_capped() -> None:
+    slept: list[float] = []
+    sleep_fn: Callable[[float], Awaitable[None]] = lambda d: _noop_sleep(slept, d)
+    conn = PlaceConnection(
+        PlaceConfig(reconnect_min_sec=1.0, reconnect_max_sec=1.5),
+        FakeAuth(_creds()),
+        transport_factory=_flaky_factory(3, lambda: conn.stop),
+        on_message=lambda t, p: None,
+        sleep=sleep_fn,
+    )
+    await conn.run()
+    assert slept == [1.0, 1.5, 1.5]  # 1.0, 2.0->cap 1.5, 4.0->cap 1.5
+
+
+async def _noop_sleep(record: list[float], delay: float) -> None:
+    record.append(delay)

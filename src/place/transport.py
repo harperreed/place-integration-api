@@ -13,6 +13,7 @@ from typing import Protocol
 from urllib.parse import quote
 
 import aiomqtt
+from aiomqtt import MqttError
 
 from .config import ALGORITHM, PATH, SCHEME, SERVICE, PlaceConfig
 from .exceptions import PlaceConnectionError
@@ -192,20 +193,32 @@ class PlaceConnection:
         await self._transport.publish(topic, payload)
 
     async def run(self) -> None:
+        attempt = 0
         while not self._stopped:
-            creds = await self._auth.async_get_iot_credentials()
-            async with self._transport_factory(self._config, creds) as transport:
-                self._transport = transport
-                try:
-                    for topic in self._subscriptions:
-                        await transport.subscribe(topic)
-                    for topic, payload in self._connect_publishes:
-                        await transport.publish(topic, payload)
-                    if self._on_state:
-                        self._on_state(True)
-                    async for topic, payload in transport.messages():
-                        self._on_message(topic, payload)
-                finally:
-                    self._transport = None
-                    if self._on_state:
-                        self._on_state(False)
+            try:
+                creds = await self._auth.async_get_iot_credentials()
+                async with self._transport_factory(self._config, creds) as transport:
+                    self._transport = transport
+                    try:
+                        for topic in self._subscriptions:
+                            await transport.subscribe(topic)
+                        for topic, payload in self._connect_publishes:
+                            await transport.publish(topic, payload)
+                        if self._on_state:
+                            self._on_state(True)
+                        async for topic, payload in transport.messages():
+                            self._on_message(topic, payload)
+                    finally:
+                        self._transport = None
+                        if self._on_state:
+                            self._on_state(False)
+                attempt = 0
+            except MqttError:
+                if self._stopped:
+                    break
+                delay = min(
+                    self._config.reconnect_max_sec,
+                    self._config.reconnect_min_sec * (2.0**attempt),
+                )
+                attempt += 1
+                await self._sleep(self._jitter(delay))
