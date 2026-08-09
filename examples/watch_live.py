@@ -18,6 +18,8 @@ from place.exceptions import MfaRequired
 async def main() -> None:
     config = PlaceConfig.from_env()
     household_ids = [h for h in str(decouple.config("PLACE_HOUSEHOLD_IDS", default="")).split(",") if h]
+    if not household_ids:
+        print("WARNING: PLACE_HOUSEHOLD_IDS is not set — no household subscription, so live motion events are DISABLED. Set it (comma-separated) in your .env to watch motion.")
     async with aiohttp.ClientSession() as session:
         cache = FileTokenCache.default()
         print(f"Token cache: {cache.path} (first run does MFA; later runs reuse it)")
@@ -34,7 +36,7 @@ async def main() -> None:
             lambda e: print(f"[event] {e.event_type} device={e.device_id} seq={e.seq}")
         )
         async with client:
-            print(f"Watching {len(client.devices)} device(s). Ctrl-C to stop.")
+            print(f"Watching {len(client.devices)} device(s), {len(household_ids)} household(s). Ctrl-C to stop.")
             async for device in client.updates():
                 motion = (
                     "  <-- MOTION"
