@@ -11,6 +11,9 @@ model parses the whole of it:
 * The live status a real PL1AS emits over shadow/get — CO ppm, CO accumulation,
   room/board temperature, humidity, the raw dual-wavelength smoke optics, wifi
   signal, battery, motion sensitivity, and the nightlight.
+* App-known reported fields a base PL1AS didn't emit in our capture — a methane
+  reading (the gas behind the explosive-gas hazard) and the battery-pre-low and
+  chatty-mode flags — parsing the same way and staying ``None`` when absent.
 
 Each added field is ``None`` (telemetry) or ``NOT_PRESENT`` (hazards) when a
 given model doesn't emit it, so absence stays distinct from a real zero.
@@ -56,12 +59,22 @@ def _num(value: Any) -> float | None:
     return value if isinstance(value, (int, float)) else None
 
 
+def _bool(value: Any) -> bool | None:
+    """Return a JSON boolean unchanged, or None if absent/not a bool.
+
+    The mirror of _num for flags: a wrong-typed value is 'unknown' (None),
+    never coerced, so an absent flag stays distinct from a real False.
+    """
+    return value if isinstance(value, bool) else None
+
+
 # Live status fields a real PL1AS reports, mapped snake_case attr -> shadow key.
 # Grounded in an actual device's shadow/get (see tests). Extend as other models
 # are observed; unknown keys simply stay None.
 _TELEMETRY = {
     "co_ppm": "coPpm",
     "co_accumulation": "coAccumulation",
+    "methane_ppm": "methanePpm",
     "temperature_c": "temperatureC",
     "board_temp_c": "boardTempC",
     "humidity": "humidity",
@@ -123,6 +136,7 @@ class PlaceDeviceShadow:
     # _num) — a device may send an integer or a decimal, and float admits both.
     co_ppm: float | None = None
     co_accumulation: float | None = None
+    methane_ppm: float | None = None
     temperature_c: float | None = None
     board_temp_c: float | None = None
     humidity: float | None = None
@@ -134,6 +148,9 @@ class PlaceDeviceShadow:
     battery_status: float | None = None
     motion_sensitivity: float | None = None
     night_light: NightLight | None = None
+    # Reported device-state flags (None when a model doesn't emit them).
+    battery_low_pre_warning: bool | None = None
+    in_chatty_mode: bool | None = None
 
     @staticmethod
     def from_shadow(shadow: dict[str, Any]) -> "PlaceDeviceShadow":
@@ -149,6 +166,8 @@ class PlaceDeviceShadow:
                 reported.get("explosiveGasAlarmStatus")
             ),
             night_light=_parse_night_light(reported.get("nightLightSettings")),
+            battery_low_pre_warning=_bool(reported.get("batteryLowPreWarning")),
+            in_chatty_mode=_bool(reported.get("inChattyMode")),
             **{attr: _num(reported.get(key)) for attr, key in _TELEMETRY.items()},
         )
 
@@ -174,3 +193,7 @@ class PlaceDeviceShadow:
                 setattr(self, attr, _num(reported[key]))
         if "nightLightSettings" in reported:
             self.night_light = _parse_night_light(reported["nightLightSettings"])
+        if "batteryLowPreWarning" in reported:
+            self.battery_low_pre_warning = _bool(reported["batteryLowPreWarning"])
+        if "inChattyMode" in reported:
+            self.in_chatty_mode = _bool(reported["inChattyMode"])

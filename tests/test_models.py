@@ -67,6 +67,21 @@ REAL_PL1AS_SHADOW = {
     }
 }
 
+# App-known reported fields beyond our base PL1AS capture: a live methane
+# reading (the gas behind the explosive-gas hazard) plus two device-state flags.
+# Wire keys are the JSON the device actually sends (batteryLowPreWarning is the
+# @JsonKey name, NOT the Dart field isBatteryPreLow); a base device that doesn't
+# emit them leaves them None, exactly like the extra hazards.
+REPORTED_EXTRAS_SHADOW = {
+    "state": {
+        "reported": {
+            "methanePpm": 7,
+            "batteryLowPreWarning": True,
+            "inChattyMode": False,
+        }
+    }
+}
+
 
 # --- The three hazards the integration has always consumed -------------------
 
@@ -236,3 +251,48 @@ def test_merge_updates_telemetry_in_place() -> None:
     assert s.co_ppm == 42                       # updated
     assert s.humidity == 53                     # unchanged
     assert s.temperature_c == 23.9185791015625  # unchanged
+
+
+# --- App-known reported fields beyond the base PL1AS capture ------------------
+
+def test_from_shadow_parses_methane_and_reported_flags() -> None:
+    """Methane ppm and the reported device flags parse off the shadow."""
+    s = PlaceDeviceShadow.from_shadow(REPORTED_EXTRAS_SHADOW)
+
+    assert s.methane_ppm == 7
+    assert s.battery_low_pre_warning is True
+    assert s.in_chatty_mode is False
+
+
+def test_reported_extras_absent_are_none() -> None:
+    """A device that omits methane/flags leaves them None, not a default value."""
+    s = PlaceDeviceShadow.from_shadow({"state": {"reported": {"smokeAlarmStatus": 0}}})
+
+    assert s.methane_ppm is None
+    assert s.battery_low_pre_warning is None
+    assert s.in_chatty_mode is None
+
+
+def test_reported_flags_reject_non_bool() -> None:
+    """A non-boolean flag value is treated as absent (None), never coerced.
+
+    Mirrors _num rejecting bools and the nightlight's on-flag handling: a value
+    of the wrong type is 'unknown', distinct from a real True/False.
+    """
+    s = PlaceDeviceShadow.from_shadow(
+        {"state": {"reported": {"batteryLowPreWarning": 1, "inChattyMode": "yes"}}}
+    )
+
+    assert s.battery_low_pre_warning is None
+    assert s.in_chatty_mode is None
+
+
+def test_merge_updates_methane_and_flags_in_place() -> None:
+    """A sparse update to methane/flags changes only the provided fields."""
+    s = PlaceDeviceShadow.from_shadow(REPORTED_EXTRAS_SHADOW)
+
+    s.merge({"state": {"reported": {"methanePpm": 12, "inChattyMode": True}}})
+
+    assert s.methane_ppm == 12           # updated
+    assert s.in_chatty_mode is True      # updated
+    assert s.battery_low_pre_warning is True  # unchanged
