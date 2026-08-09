@@ -3,9 +3,6 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
-from .mqtt_client import MqttClient
-
-
 HOUSEHOLD_PREFIX = "connectedsmoke/household"
 SHADOW_GET_PREFIX = "$aws/things"
 
@@ -75,38 +72,3 @@ def thing_name_from_topic(topic: str) -> str | None:
     if len(parts) >= 3 and parts[0] == "$aws" and parts[1] == "things":
         return parts[2]
     return None
-
-
-class PlaceMessages:
-    def __init__(self, client: MqttClient):
-        self._client = client
-
-    def subscribe_household(self, household_id: str, qos: int = 1) -> str:
-        hid = household_id.strip()
-        assert hid
-        topic = household_subscription_topic(hid)
-        self._client.subscribe(topic, qos=qos)
-        return hid
-
-    def subscribe_shadow(self, thing_name: str, qos: int = 1) -> str:
-        name = thing_name.strip()
-        assert name
-        topic = shadow_subscription_topic(name)
-        self._client.subscribe(topic, qos=qos)
-        return name
-
-    def publish_shadow_get(self, thing_name: str, qos: int = 1) -> str:
-        name = thing_name.strip()
-        assert name
-        topic = shadow_get_topic(name)
-        self._client.publish(topic, qos=qos)
-        return name
-
-    def describe(self, topic: str, raw: bytes) -> str:
-        return describe_message(topic, raw)
-
-
-    @staticmethod
-    def thing_name_from_topic(topic: str) -> str | None:
-        """Extract thing_name from an AWS IoT shadow topic ($aws/things/{name}/shadow/...)."""
-        return thing_name_from_topic(topic)
