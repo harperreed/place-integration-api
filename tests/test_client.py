@@ -191,3 +191,21 @@ async def test_connection_change_notifies_and_dedupes() -> None:
     assert changes == [True, False]
     assert client.connected is False
     await client.stop()
+
+
+async def test_async_refresh_shadow_publishes_get_for_all_devices() -> None:
+    client, conn = await _started_client("Place_PL1AS_EXAMPLE")
+
+    await client.async_refresh_shadow()
+
+    assert conn.published == [(shadow_get_topic("Place_PL1AS_EXAMPLE"), b"")]
+    await client.stop()
+
+
+async def test_async_refresh_shadow_publishes_get_for_one_device() -> None:
+    client, conn = await _started_client("Place_PL1AS_EXAMPLE", "Place_PL1AS_OTHER")
+
+    await client.async_refresh_shadow("Place_PL1AS_EXAMPLE")
+
+    assert conn.published == [(shadow_get_topic("Place_PL1AS_EXAMPLE"), b"")]
+    await client.stop()

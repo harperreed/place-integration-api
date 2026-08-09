@@ -38,6 +38,7 @@ class Connection(Protocol):
 
     def add_subscription(self, topic: str) -> None: ...
     def add_connect_publish(self, topic: str, payload: bytes = b"") -> None: ...
+    async def publish(self, topic: str, payload: bytes = b"") -> None: ...
     async def run(self) -> None: ...
     def stop(self) -> None: ...
 
@@ -162,6 +163,11 @@ class PlaceClient:
                 unsubscribe()
 
         return _generator()
+
+    async def async_refresh_shadow(self, thing_name: str | None = None) -> None:
+        names = [thing_name] if thing_name is not None else list(self._devices)
+        for name in names:
+            await self._connection.publish(shadow_get_topic(name), b"")
 
     @staticmethod
     def _register(
