@@ -58,6 +58,33 @@ def test_apply_event_records_motion_and_notifies() -> None:
     assert seen == [dev]
 
 
+def test_motion_state_is_false_before_any_event() -> None:
+    dev = PlaceDevice.from_discovery(_discover())
+    assert dev.last_motion_at is None
+    assert dev.motion() is False
+
+
+def test_apply_motion_event_stamps_last_motion_at() -> None:
+    dev = PlaceDevice.from_discovery(_discover())
+    dev.apply_event(DeviceEvent(event_type="motionDetected"), now=100.0)
+    assert dev.last_motion_at == 100.0
+
+
+def test_motion_is_true_within_the_window_and_false_after() -> None:
+    dev = PlaceDevice.from_discovery(_discover())
+    dev.apply_event(DeviceEvent(event_type="motionDetected"), now=100.0)
+    assert dev.motion(within_seconds=30, now=120.0) is True  # 20s since motion
+    assert dev.motion(within_seconds=30, now=140.0) is False  # 40s since motion
+
+
+def test_non_motion_event_does_not_stamp_motion() -> None:
+    dev = PlaceDevice.from_discovery(_discover())
+    dev.apply_event(DeviceEvent(event_type="somethingElse"), now=100.0)
+    assert dev.last_motion_at is None
+    assert dev.motion(now=100.0) is False
+    assert dev.last_event is not None and dev.last_event.event_type == "somethingElse"
+
+
 def test_unsubscribe_stops_notifications() -> None:
     dev = PlaceDevice.from_discovery(_discover())
     seen: list[PlaceDevice] = []

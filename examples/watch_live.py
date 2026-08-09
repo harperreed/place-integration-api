@@ -38,11 +38,7 @@ async def main() -> None:
         async with client:
             print(f"Watching {len(client.devices)} device(s), {len(household_ids)} household(s). Ctrl-C to stop.")
             async for device in client.updates():
-                motion = (
-                    "  <-- MOTION"
-                    if device.last_event is not None and device.last_event.is_motion
-                    else ""
-                )
+                motion = "  <-- MOTION" if device.motion() else ""
                 print(
                     f"[update] {device.name or device.thing_name} "
                     f"co_ppm={device.shadow.co_ppm} "
