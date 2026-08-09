@@ -2,10 +2,10 @@
 # ABOUTME: Connect to PLACE, discover devices, and print a live shadow snapshot after
 # ABOUTME: the initial shadow/get lands. Throwaway script; read-only against a real account.
 import asyncio
-import os
 from getpass import getpass
 
 import aiohttp
+import decouple
 
 from place.auth.cognito_auth import CognitoAuth
 from place.client import PlaceClient
@@ -18,7 +18,9 @@ async def main() -> None:
     async with aiohttp.ClientSession() as session:
         auth = CognitoAuth(config, session)
         try:
-            await auth.authenticate(os.environ["PLACE_USERNAME"], os.environ["PLACE_PASSWORD"])
+            await auth.authenticate(
+                str(decouple.config("PLACE_USERNAME")), str(decouple.config("PLACE_PASSWORD"))
+            )
         except MfaRequired as mfa:
             await auth.submit_mfa(getpass(f"MFA code ({mfa.challenge_name}): "))
 
