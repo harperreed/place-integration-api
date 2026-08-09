@@ -2116,6 +2116,7 @@ class PlaceClient:
         for household_id in self._household_ids:
             self._connection.add_subscription(household_subscription_topic(household_id))
         self._task = asyncio.create_task(self._connection.run())
+        await asyncio.sleep(0)  # let the connection task take its first step before we return
 
     async def stop(self) -> None:
         self._connection.stop()
