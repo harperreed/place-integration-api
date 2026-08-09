@@ -1,3 +1,5 @@
+# ABOUTME: Pure helpers for the PLACE MQTT layer — topic builders (shadow + household),
+# ABOUTME: payload parsing, message classification, and thing-name extraction.
 from __future__ import annotations
 
 import json

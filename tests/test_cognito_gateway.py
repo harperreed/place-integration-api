@@ -6,11 +6,14 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pytest
+from botocore.exceptions import ClientError
 
-from place.auth import cognito_gateway
+from place.auth import cognito_gateway, srp_auth
 from place.auth.cognito_gateway import RealCognitoGateway
 from place.auth.srp_auth import get_iot_credentials, refresh_tokens, respond_mfa
 from place.config import PlaceConfig
+from place.exceptions import PlaceAuthError
+from place.models import Credentials
 
 
 class _FakeIdentityClient:
@@ -172,3 +175,35 @@ def test_respond_mfa_uses_sms_code_key_for_sms_challenge() -> None:
     assert name == "respond_to_auth_challenge"
     assert kwargs["ChallengeName"] == "SMS_MFA"
     assert kwargs["ChallengeResponses"] == {"USERNAME": "bob", "SMS_MFA_CODE": "654321"}
+
+
+def test_iot_credentials_translates_botocore_to_place_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(*args: object, **kwargs: object) -> Credentials:
+        raise ClientError(
+            {"Error": {"Code": "TooManyRequestsException", "Message": "slow down"}},
+            "GetCredentialsForIdentity",
+        )
+
+    monkeypatch.setattr(srp_auth, "get_iot_credentials", _boom)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(PlaceAuthError):
+        gateway.iot_credentials("id-token", "access-token")
+
+
+def test_refresh_translates_botocore_to_place_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(*args: object, **kwargs: object) -> dict[str, object]:
+        raise ClientError(
+            {"Error": {"Code": "NotAuthorizedException", "Message": "expired"}},
+            "InitiateAuth",
+        )
+
+    monkeypatch.setattr(srp_auth, "refresh_tokens", _boom)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(PlaceAuthError):
+        gateway.refresh("some-refresh-token")

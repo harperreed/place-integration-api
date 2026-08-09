@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
@@ -11,7 +12,7 @@ import pytest
 from aiomqtt import MqttError
 
 from place.config import PlaceConfig
-from place.exceptions import PlaceConnectionError
+from place.exceptions import PlaceAuthError, PlaceConnectionError
 from place.models import Credentials
 from place.transport import MqttTransport, PlaceConnection, TransportFactory
 
@@ -28,6 +29,20 @@ class FakeAuth:
     async def async_get_iot_credentials(self) -> Credentials:
         self.calls += 1
         return self._creds
+
+
+class FlakyAuth:
+    """Raises PlaceAuthError for the first `fail_times` credential fetches, then succeeds."""
+
+    def __init__(self, fail_times: int) -> None:
+        self._fail_times: int = fail_times
+        self.calls: int = 0
+
+    async def async_get_iot_credentials(self) -> Credentials:
+        self.calls += 1
+        if self.calls <= self._fail_times:
+            raise PlaceAuthError("credential fetch failed")
+        return _creds()
 
 
 class ScriptedTransport:
@@ -412,3 +427,31 @@ async def test_refresh_deadline_triggers_proactive_reconnect() -> None:
 
     assert auth.calls == 2  # the pump cycled once — a second connect happened
     assert slept == []  # no backoff sleep: the cycle came from the timeout, not MqttError
+
+
+async def test_credential_failure_backs_off_and_retries(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    subs: list[str] = []
+    published: list[tuple[str, bytes]] = []
+    slept: list[float] = []
+    sleep_fn: Callable[[float], Awaitable[None]] = lambda d: _noop_sleep(slept, d)
+    auth = FlakyAuth(1)  # first credential fetch fails, second succeeds
+
+    factory: TransportFactory = lambda cfg, creds: ScriptedTransport(
+        [], subs, published, conn.stop
+    )
+    conn = PlaceConnection(
+        PlaceConfig(reconnect_min_sec=1.0, reconnect_max_sec=60.0),
+        auth,
+        transport_factory=factory,
+        on_message=lambda t, p: None,
+        sleep=sleep_fn,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="place.transport"):
+        await conn.run()
+
+    assert auth.calls == 2  # survived the PlaceAuthError and retried, not killed
+    assert slept == [1.0]  # went through the backoff path (attempt 0 delay = min_sec)
+    assert any("reconnecting" in record.message for record in caplog.records)

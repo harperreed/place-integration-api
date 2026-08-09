@@ -1,5 +1,5 @@
 # ABOUTME: Tests for PlaceClient — the async facade wiring discovery, the MQTT connection,
-# ABOUTME: and the PlaceDevice registry (read-only: shadow/get + subscribe, routing in Task 15).
+# ABOUTME: and the PlaceDevice registry (read-only: shadow/get + subscribe, plus message routing).
 from __future__ import annotations
 
 import asyncio

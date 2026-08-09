@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime, timezone
@@ -16,8 +17,10 @@ import aiomqtt
 from aiomqtt import MqttError
 
 from .config import ALGORITHM, PATH, SCHEME, SERVICE, PlaceConfig
-from .exceptions import PlaceConnectionError
+from .exceptions import PlaceConnectionError, PlaceError
 from .models import Credentials
+
+logger = logging.getLogger(__name__)
 
 
 def _hmac_sha256(key: bytes, msg: str) -> bytes:
@@ -223,7 +226,7 @@ class PlaceConnection:
                         if self._on_state:
                             self._on_state(False)
                 attempt = 0
-            except MqttError:
+            except (MqttError, PlaceError) as exc:
                 if self._stopped:
                     break
                 delay = min(
@@ -231,4 +234,8 @@ class PlaceConnection:
                     self._config.reconnect_min_sec * (2.0**attempt),
                 )
                 attempt += 1
-                await self._sleep(self._jitter(delay))
+                wait = self._jitter(delay)
+                logger.warning(
+                    "Place connection error (%s); reconnecting in %.1fs", exc, wait
+                )
+                await self._sleep(wait)

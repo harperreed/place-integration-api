@@ -1,3 +1,5 @@
+# ABOUTME: PlaceConfig — the SDK's frozen, typed configuration for the PLACE cloud (AWS/Cognito/
+# ABOUTME: IoT endpoints, reconnect + refresh tuning), with real PLACE defaults and from_env() overrides.
 from __future__ import annotations
 
 from dataclasses import dataclass
