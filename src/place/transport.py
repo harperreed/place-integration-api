@@ -226,6 +226,10 @@ class PlaceConnection:
                         if self._on_state:
                             self._on_state(False)
                 attempt = 0
+            # A dropped MQTT session raises MqttError; a failed credential refresh
+            # (expired or throttled Cognito) surfaces as PlaceError from the gateway
+            # seam. Catch both so either feeds the backoff loop instead of escaping
+            # run() and silently killing reconnection.
             except (MqttError, PlaceError) as exc:
                 if self._stopped:
                     break

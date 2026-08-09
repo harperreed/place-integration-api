@@ -207,3 +207,40 @@ def test_refresh_translates_botocore_to_place_auth_error(
 
     with pytest.raises(PlaceAuthError):
         gateway.refresh("some-refresh-token")
+
+
+def test_srp_login_translates_botocore_to_place_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(*args: object, **kwargs: object) -> dict[str, object]:
+        raise ClientError(
+            {"Error": {"Code": "NotAuthorizedException", "Message": "bad password"}},
+            "InitiateAuth",
+        )
+
+    monkeypatch.setattr(srp_auth, "get_tokens_via_srp", _boom)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(PlaceAuthError):
+        gateway.srp_login("alice", "pw")
+
+
+def test_respond_mfa_translates_botocore_to_place_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _boom(*args: object, **kwargs: object) -> dict[str, object]:
+        raise ClientError(
+            {"Error": {"Code": "CodeMismatchException", "Message": "wrong code"}},
+            "RespondToAuthChallenge",
+        )
+
+    monkeypatch.setattr(srp_auth, "respond_mfa", _boom)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(PlaceAuthError):
+        gateway.respond_mfa(
+            challenge_name="SOFTWARE_TOKEN_MFA",
+            session="s",
+            username="alice",
+            code="123456",
+        )
