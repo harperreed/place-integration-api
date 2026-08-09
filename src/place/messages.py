@@ -69,6 +69,14 @@ def describe_message(topic: str, raw: bytes) -> str:
     return f"[{kind}] {topic}{extra}"
 
 
+def thing_name_from_topic(topic: str) -> str | None:
+    """Extract thing_name from an AWS IoT shadow topic ($aws/things/{name}/shadow/...)."""
+    parts = topic.split("/")
+    if len(parts) >= 3 and parts[0] == "$aws" and parts[1] == "things":
+        return parts[2]
+    return None
+
+
 class PlaceMessages:
     def __init__(self, client: MqttClient):
         self._client = client
@@ -101,7 +109,4 @@ class PlaceMessages:
     @staticmethod
     def thing_name_from_topic(topic: str) -> str | None:
         """Extract thing_name from an AWS IoT shadow topic ($aws/things/{name}/shadow/...)."""
-        parts = topic.split("/")
-        if len(parts) >= 3 and parts[0] == "$aws" and parts[1] == "things":
-            return parts[2]
-        return None
+        return thing_name_from_topic(topic)

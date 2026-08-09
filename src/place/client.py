@@ -3,23 +3,28 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
-from typing import Protocol
+from collections.abc import AsyncGenerator, Callable
+from typing import Protocol, TypeVar
 
 from .auth.cognito_auth import CognitoAuth
 from .config import PlaceConfig
 from .device import PlaceDevice
 from .messages import (
     household_subscription_topic,
+    parse_payload,
     shadow_get_topic,
     shadow_subscription_topic,
+    thing_name_from_topic,
 )
-from .models import Credentials, DiscoverDevice
+from .models import Credentials, DeviceEvent, DiscoverDevice
+from .models.device_event import EVENTS_SEGMENT
 from .provider import Provider
 from .transport import AiomqttTransport, MqttTransport, PlaceConnection
 
 OnMessage = Callable[[str, bytes], None]
 OnState = Callable[[bool], None]
+
+_ListenerT = TypeVar("_ListenerT")
 
 
 class Discoverer(Protocol):
@@ -62,6 +67,9 @@ class PlaceClient:
         self._household_ids: list[str] = list(household_ids or [])
         self._devices: dict[str, PlaceDevice] = {}
         self._connected: bool = False
+        self._update_listeners: list[Callable[[PlaceDevice], None]] = []
+        self._event_listeners: list[Callable[[DeviceEvent], None]] = []
+        self._connection_listeners: list[Callable[[bool], None]] = []
         self._connection: Connection = connection_factory(self._dispatch, self._set_connected)
         self._task: asyncio.Task[None] | None = None
 
@@ -127,8 +135,85 @@ class PlaceClient:
     async def __aexit__(self, *exc: object) -> None:
         await self.stop()
 
-    def _dispatch(self, topic: str, payload: bytes) -> None:
-        _ = (topic, payload)  # routing added in Task 15
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    def on_update(self, callback: Callable[[PlaceDevice], None]) -> Callable[[], None]:
+        return self._register(self._update_listeners, callback)
+
+    def on_event(self, callback: Callable[[DeviceEvent], None]) -> Callable[[], None]:
+        return self._register(self._event_listeners, callback)
+
+    def on_connection_change(
+        self, callback: Callable[[bool], None]
+    ) -> Callable[[], None]:
+        return self._register(self._connection_listeners, callback)
+
+    def updates(self) -> AsyncGenerator[PlaceDevice, None]:
+        queue: asyncio.Queue[PlaceDevice] = asyncio.Queue()
+        unsubscribe = self.on_update(queue.put_nowait)
+
+        async def _generator() -> AsyncGenerator[PlaceDevice, None]:
+            try:
+                while True:
+                    yield await queue.get()
+            finally:
+                unsubscribe()
+
+        return _generator()
+
+    @staticmethod
+    def _register(
+        registry: list[_ListenerT], callback: _ListenerT
+    ) -> Callable[[], None]:
+        registry.append(callback)
+
+        def _unsubscribe() -> None:
+            if callback in registry:
+                registry.remove(callback)
+
+        return _unsubscribe
+
+    def _dispatch(self, topic: str, raw: bytes) -> None:
+        payload = parse_payload(raw)
+        thing = thing_name_from_topic(topic)
+        if thing is not None:
+            device = self._devices.get(thing)
+            if device is not None:
+                device.apply_shadow(payload)
+                self._emit_update(device)
+            return
+        if EVENTS_SEGMENT in topic:
+            event = DeviceEvent.from_message(topic, payload)
+            if event is None:
+                return
+            device = self._device_for_event(event)
+            if device is not None:
+                device.apply_event(event)
+                self._emit_update(device)
+            self._emit_event(event)
+
+    def _device_for_event(self, event: DeviceEvent) -> PlaceDevice | None:
+        if event.thing_name and event.thing_name in self._devices:
+            return self._devices[event.thing_name]
+        if event.device_id:
+            for device in self._devices.values():
+                if device.device_id == event.device_id:
+                    return device
+        return None
+
+    def _emit_update(self, device: PlaceDevice) -> None:
+        for callback in list(self._update_listeners):
+            callback(device)
+
+    def _emit_event(self, event: DeviceEvent) -> None:
+        for callback in list(self._event_listeners):
+            callback(event)
 
     def _set_connected(self, connected: bool) -> None:
+        if self._connected == connected:
+            return
         self._connected = connected
+        for callback in list(self._connection_listeners):
+            callback(connected)
