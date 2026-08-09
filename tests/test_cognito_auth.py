@@ -18,19 +18,26 @@ from place.models import Credentials
 class FakeGateway:
     """In-memory CognitoGateway: scripted login/refresh/mfa, records calls."""
 
-    def __init__(self, *, login=None, mfa=None, refresh=None, creds=None) -> None:
+    def __init__(
+        self, *, login=None, mfa=None, refresh=None, creds=None, refresh_error=None
+    ) -> None:
         self._login = login or {}
         self._mfa = mfa or {}
         self._refresh = refresh or {}
         self._creds = creds
+        self._refresh_error = refresh_error
+        self.login_calls = 0
         self.refresh_calls = 0
         self.iot_calls = 0
 
     def srp_login(self, username: str, password: str) -> dict[str, Any]:
+        self.login_calls += 1
         return self._login
 
     def refresh(self, refresh_token: str) -> dict[str, Any]:
         self.refresh_calls += 1
+        if self._refresh_error is not None:
+            raise self._refresh_error
         return self._refresh
 
     def respond_mfa(self, *, challenge_name, session, username, code) -> dict[str, Any]:
@@ -231,3 +238,109 @@ async def test_iot_credentials_uses_expiry_fallback_when_response_has_none() -> 
     second = await auth.async_get_iot_credentials()
     assert first is second  # fallback expiry (now + url_expire_sec) keeps creds fresh → served from cache
     assert gw.iot_calls == 1
+
+
+class FakeCache:
+    """In-memory TokenCache: scripted load, records saves/clears."""
+
+    def __init__(self, data: dict[str, Any] | None = None) -> None:
+        self.data = data
+        self.saves = 0
+        self.clears = 0
+
+    def load(self) -> dict[str, Any] | None:
+        return self.data
+
+    def save(self, data: dict[str, Any]) -> None:
+        self.data = dict(data)
+        self.saves += 1
+
+    def clear(self) -> None:
+        self.data = None
+        self.clears += 1
+
+
+async def test_authenticate_uses_cached_refresh_token_and_skips_srp() -> None:
+    gw = FakeGateway(
+        login={"AuthenticationResult": _auth_result(AccessToken="access-srp")},
+        refresh={"AccessToken": "access-cached", "IdToken": "id-2", "ExpiresIn": 3600},
+    )
+    cache = FakeCache({"username": "alice", "refresh_token": "rt-cached"})
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw, token_cache=cache)  # pyright: ignore[reportArgumentType]
+
+    await auth.authenticate("alice", "pw")
+
+    assert await auth.async_get_access_token() == "access-cached"
+    assert gw.refresh_calls == 1
+    assert gw.login_calls == 0  # cache hit → SRP (and its MFA prompt) skipped entirely
+
+
+async def test_cached_login_threads_refresh_token_into_memory() -> None:
+    # REFRESH_TOKEN_AUTH responses omit the refresh token; the cached one must survive so
+    # subsequent in-process refreshes still work.
+    gw = FakeGateway(
+        refresh={"AccessToken": "access-cached", "IdToken": "id-2", "ExpiresIn": 3600},
+    )
+    cache = FakeCache({"username": "alice", "refresh_token": "rt-cached"})
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw, token_cache=cache)  # pyright: ignore[reportArgumentType]
+
+    await auth.authenticate("alice", "pw")
+
+    assert auth._refresh_token == "rt-cached"
+
+
+async def test_authenticate_falls_back_to_srp_when_cached_refresh_rejected() -> None:
+    gw = FakeGateway(
+        login={"AuthenticationResult": _auth_result(AccessToken="access-srp")},
+        refresh_error=PlaceAuthError("token refresh failed: expired"),
+    )
+    cache = FakeCache({"username": "alice", "refresh_token": "rt-stale"})
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw, token_cache=cache)  # pyright: ignore[reportArgumentType]
+
+    await auth.authenticate("alice", "pw")
+
+    assert await auth.async_get_access_token() == "access-srp"
+    assert gw.refresh_calls == 1  # tried the cached token...
+    assert gw.login_calls == 1  # ...then fell back to SRP
+
+
+async def test_authenticate_persists_refresh_token_after_srp_login() -> None:
+    gw = FakeGateway(login={"AuthenticationResult": _auth_result(RefreshToken="rt-fresh")})
+    cache = FakeCache()
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw, token_cache=cache)  # pyright: ignore[reportArgumentType]
+
+    await auth.authenticate("alice", "pw")
+
+    assert cache.data == {"username": "alice", "refresh_token": "rt-fresh"}
+
+
+async def test_authenticate_ignores_cache_for_a_different_user() -> None:
+    gw = FakeGateway(login={"AuthenticationResult": _auth_result(AccessToken="access-srp")})
+    cache = FakeCache({"username": "bob", "refresh_token": "rt-bob"})
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw, token_cache=cache)  # pyright: ignore[reportArgumentType]
+
+    await auth.authenticate("alice", "pw")
+
+    assert gw.refresh_calls == 0  # username mismatch → cache ignored
+    assert gw.login_calls == 1
+    assert await auth.async_get_access_token() == "access-srp"
+
+
+async def test_mfa_login_persists_only_after_completion() -> None:
+    gw = FakeGateway(
+        login={"ChallengeName": "SOFTWARE_TOKEN_MFA", "Session": "sess-9"},
+        mfa={
+            "AuthenticationResult": _auth_result(
+                AccessToken="access-mfa", RefreshToken="rt-mfa"
+            )
+        },
+    )
+    cache = FakeCache()
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw, token_cache=cache)  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(MfaRequired):
+        await auth.authenticate("alice", "pw")
+    assert cache.data is None  # nothing persisted while the MFA challenge is pending
+    await auth.submit_mfa("123456")
+
+    assert cache.data == {"username": "alice", "refresh_token": "rt-mfa"}

@@ -10,6 +10,7 @@ def test_top_level_exports_are_importable() -> None:
         Credentials,
         DeviceEvent,
         DiscoverDevice,
+        FileTokenCache,
         MfaRequired,
         NightLight,
         PlaceAuthError,
@@ -21,6 +22,7 @@ def test_top_level_exports_are_importable() -> None:
         PlaceDiscoveryError,
         PlaceError,
         PlaceTimeoutError,
+        TokenCache,
     )
 
     # Spot-check the names resolve to the real objects, not placeholders.
@@ -39,6 +41,9 @@ def test_top_level_exports_are_importable() -> None:
     assert DeviceEvent.__name__ == "DeviceEvent"
     assert DiscoverDevice.__name__ == "DiscoverDevice"
     assert Credentials.__name__ == "Credentials"
+    # Opt-in refresh-token persistence surface for SDK consumers.
+    assert FileTokenCache.__name__ == "FileTokenCache"
+    assert TokenCache.__name__ == "TokenCache"
 
 
 def test_version_is_exposed() -> None:

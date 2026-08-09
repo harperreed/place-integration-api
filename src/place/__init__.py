@@ -5,6 +5,7 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version
 
 from .auth.cognito_auth import CognitoAuth
+from .auth.token_cache import FileTokenCache, TokenCache
 from .client import PlaceClient
 from .config import PlaceConfig
 from .device import PlaceDevice
@@ -32,6 +33,8 @@ except PackageNotFoundError:  # pragma: no cover - source checkout without an in
 
 __all__ = [
     "CognitoAuth",
+    "FileTokenCache",
+    "TokenCache",
     "PlaceClient",
     "PlaceConfig",
     "PlaceDevice",

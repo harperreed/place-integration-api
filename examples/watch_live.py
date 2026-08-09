@@ -9,6 +9,7 @@ import aiohttp
 import decouple
 
 from place.auth.cognito_auth import CognitoAuth
+from place.auth.token_cache import FileTokenCache
 from place.client import PlaceClient
 from place.config import PlaceConfig
 from place.exceptions import MfaRequired
@@ -18,7 +19,9 @@ async def main() -> None:
     config = PlaceConfig.from_env()
     household_ids = [h for h in str(decouple.config("PLACE_HOUSEHOLD_IDS", default="")).split(",") if h]
     async with aiohttp.ClientSession() as session:
-        auth = CognitoAuth(config, session)
+        cache = FileTokenCache.default()
+        print(f"Token cache: {cache.path} (first run does MFA; later runs reuse it)")
+        auth = CognitoAuth(config, session, token_cache=cache)
         try:
             await auth.authenticate(
                 str(decouple.config("PLACE_USERNAME")), str(decouple.config("PLACE_PASSWORD"))
