@@ -10,6 +10,7 @@ from .auth.cognito_auth import CognitoAuth
 from .config import PlaceConfig
 from .device import PlaceDevice
 from .messages import (
+    household_id_from_thing_name,
     household_subscription_topic,
     parse_payload,
     shadow_get_topic,
@@ -107,6 +108,11 @@ class PlaceClient:
 
     async def start(self) -> None:
         discovered = await self._provider.discover()
+        # Any explicitly configured households first, then one derived from each
+        # device's thing name (the household subscription is what delivers live
+        # motion events). dict.fromkeys dedupes while preserving order — devices
+        # share a household, and a manual id may repeat a derived one.
+        household_ids: list[str] = list(self._household_ids)
         for entry in discovered:
             if not entry.thing_name:
                 continue
@@ -114,7 +120,8 @@ class PlaceClient:
             self._devices[device.thing_name] = device
             self._connection.add_subscription(shadow_subscription_topic(device.thing_name))
             self._connection.add_connect_publish(shadow_get_topic(device.thing_name))
-        for household_id in self._household_ids:
+            household_ids.append(household_id_from_thing_name(device.thing_name))
+        for household_id in dict.fromkeys(household_ids):
             self._connection.add_subscription(household_subscription_topic(household_id))
         self._task = asyncio.create_task(self._connection.run())
         await asyncio.sleep(0)  # let the connection task take its first step before we return

@@ -96,6 +96,52 @@ async def test_start_discovers_wires_subscriptions_and_launches() -> None:
     assert conn.stopped is True
 
 
+async def test_start_auto_derives_household_from_thing_name() -> None:
+    # No household_ids passed: the household subscription (which carries live
+    # motion events) is derived from the discovered thing name's leading token.
+    client, conn = await _started_client("hh-1_reg-1_Place_PL1AS_EXAMPLE")
+
+    assert household_subscription_topic("hh-1") in conn.subscriptions
+    await client.stop()
+
+
+async def test_start_unions_manual_household_with_derived() -> None:
+    created: list[FakeConnection] = []
+
+    def connection_factory(
+        on_message: Callable[[str, bytes], None],
+        on_state: Callable[[bool], None],
+    ) -> FakeConnection:
+        conn = FakeConnection(on_message, on_state)
+        created.append(conn)
+        return conn
+
+    client = PlaceClient(
+        PlaceConfig(),
+        auth=cast(CognitoAuth, object()),
+        provider=FakeProvider([_discover("hh-1_reg-1_Place_PL1AS_EXAMPLE")]),
+        connection_factory=connection_factory,
+        household_ids=["extra-hh"],
+    )
+
+    await client.start()
+    conn = created[0]
+
+    assert household_subscription_topic("extra-hh") in conn.subscriptions  # manual
+    assert household_subscription_topic("hh-1") in conn.subscriptions  # derived
+    await client.stop()
+
+
+async def test_start_dedupes_household_shared_by_multiple_devices() -> None:
+    client, conn = await _started_client(
+        "hh-1_reg-1_Place_PL1AS_A",
+        "hh-1_reg-2_Place_PL1AS_B",
+    )
+
+    assert conn.subscriptions.count(household_subscription_topic("hh-1")) == 1
+    await client.stop()
+
+
 async def test_create_builds_a_client_with_empty_registry() -> None:
     client = PlaceClient.create(PlaceConfig(), auth=cast(CognitoAuth, object()))
     assert client.devices == {}

@@ -74,3 +74,16 @@ def thing_name_from_topic(topic: str) -> str | None:
     if len(parts) >= 3 and parts[0] == "$aws" and parts[1] == "things":
         return parts[2]
     return None
+
+
+def household_id_from_thing_name(thing_name: str) -> str:
+    """Return the household id encoded in a thing name's leading token.
+
+    A thing name is ``{householdId}_{registrationId}_{deviceId}``. The household
+    and registration ids are UUIDs (no underscores), so the first underscore
+    always terminates the household id — even though the deviceId itself contains
+    underscores (``Place_PL1AS_xxxx``). This lets the client derive the household
+    subscription (which carries live motion events) straight from discovery,
+    with no separately configured household id.
+    """
+    return thing_name.split("_", 1)[0]
