@@ -1,7 +1,7 @@
 # examples/watch_live.py
 # ABOUTME: Live PLACE watcher — streams shadow updates and household events, flagging
-# ABOUTME: motionDetected pulses. Throwaway script; read-only. Set PLACE_HOUSEHOLD_IDS
-# ABOUTME: (comma-separated) to receive the live motion firehose.
+# ABOUTME: motionDetected pulses. Throwaway script; read-only. Households (and thus the
+# ABOUTME: live motion firehose) are auto-derived from discovery — no extra config.
 import asyncio
 from getpass import getpass
 
@@ -17,9 +17,6 @@ from place.exceptions import MfaRequired
 
 async def main() -> None:
     config = PlaceConfig.from_env()
-    household_ids = [h for h in str(decouple.config("PLACE_HOUSEHOLD_IDS", default="")).split(",") if h]
-    if not household_ids:
-        print("WARNING: PLACE_HOUSEHOLD_IDS is not set — no household subscription, so live motion events are DISABLED. Set it (comma-separated) in your .env to watch motion.")
     async with aiohttp.ClientSession() as session:
         cache = FileTokenCache.default()
         print(f"Token cache: {cache.path} (first run does MFA; later runs reuse it)")
@@ -31,12 +28,12 @@ async def main() -> None:
         except MfaRequired as mfa:
             await auth.submit_mfa(getpass(f"MFA code ({mfa.challenge_name}): "))
 
-        client = PlaceClient.create(config, auth, household_ids=household_ids)
+        client = PlaceClient.create(config, auth)
         client.on_event(
             lambda e: print(f"[event] {e.event_type} device={e.device_id} seq={e.seq}")
         )
         async with client:
-            print(f"Watching {len(client.devices)} device(s), {len(household_ids)} household(s). Ctrl-C to stop.")
+            print(f"Watching {len(client.devices)} device(s). Ctrl-C to stop.")
             async for device in client.updates():
                 motion = "  <-- MOTION" if device.motion() else ""
                 print(
