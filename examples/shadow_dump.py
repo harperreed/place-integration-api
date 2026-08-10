@@ -47,6 +47,13 @@ async def main() -> None:
         seen: dict[str, dict[str, object]] = {}
 
         def on_message(topic: str, raw: bytes) -> None:
+            # Only the get/accepted reply carries the full reported shadow. The
+            # subscription is a shadow/# wildcard, so without this filter the
+            # first message per thing can be an empty-payload message (our own
+            # shadow/get echoed back, or a retained one) that parses to {} and,
+            # under first-wins, masks the real shadow.
+            if not topic.endswith("/shadow/get/accepted"):
+                return
             thing = thing_name_from_topic(topic)
             if thing is None or thing in seen:
                 return
