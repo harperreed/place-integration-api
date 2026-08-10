@@ -84,13 +84,15 @@ REPORTED_EXTRAS_SHADOW = {
 
 # Device health sub-objects. faults and endOfLife are nested objects whose full
 # key set varies by model/firmware, so the model passes them through as-is rather
-# than half-typing a schema we haven't pinned. The keys here are real, from the
-# live 5-device capture (see the gentex-place-shadow-schema notes).
+# than half-typing a schema we haven't pinned. Keys and shape are from a live
+# shadow/get: the values are integer flags (0/1), NOT booleans — half-typing them
+# as bool would have been wrong. stuckButton is set non-zero here to show a
+# non-zero flag passes through unchanged.
 HEALTH_SHADOW = {
     "state": {
         "reported": {
-            "faults": {"stuckButton": False, "corruptNvm": False, "coSens": True},
-            "endOfLife": {"system": False},
+            "faults": {"coSensor": 0, "corruptNvm": 0, "stuckButton": 1},
+            "endOfLife": {"system": 0},
         }
     }
 }
@@ -331,8 +333,8 @@ def test_from_shadow_parses_health_objects() -> None:
     """faults and endOfLife pass through as the objects the device sent."""
     s = PlaceDeviceShadow.from_shadow(HEALTH_SHADOW)
 
-    assert s.faults == {"stuckButton": False, "corruptNvm": False, "coSens": True}
-    assert s.end_of_life == {"system": False}
+    assert s.faults == {"coSensor": 0, "corruptNvm": 0, "stuckButton": 1}
+    assert s.end_of_life == {"system": 0}
 
 
 def test_health_objects_absent_are_none() -> None:
@@ -357,13 +359,13 @@ def test_merge_updates_health_objects_in_place() -> None:
     """A sparse update to a health object replaces only that object."""
     s = PlaceDeviceShadow.from_shadow(HEALTH_SHADOW)
 
-    s.merge({"state": {"reported": {"endOfLife": {"system": True}}}})
+    s.merge({"state": {"reported": {"endOfLife": {"system": 1}}}})
 
-    assert s.end_of_life == {"system": True}  # updated
-    assert s.faults == {                       # unchanged
-        "stuckButton": False,
-        "corruptNvm": False,
-        "coSens": True,
+    assert s.end_of_life == {"system": 1}  # updated
+    assert s.faults == {                    # unchanged
+        "coSensor": 0,
+        "corruptNvm": 0,
+        "stuckButton": 1,
     }
 
 
