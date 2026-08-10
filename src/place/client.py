@@ -193,8 +193,7 @@ class PlaceClient:
         thing = thing_name_from_topic(topic)
         if thing is not None:
             device = self._devices.get(thing)
-            if device is not None:
-                device.apply_shadow(payload)
+            if device is not None and device.apply_shadow(payload):
                 self._emit_update(device)
             return
         if EVENTS_SEGMENT in topic:

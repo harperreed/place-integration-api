@@ -55,9 +55,16 @@ class PlaceDevice:
 
         return _unsubscribe
 
-    def apply_shadow(self, message: dict[str, object]) -> None:
-        self.shadow.merge(message)
-        self._notify()
+    def apply_shadow(self, message: dict[str, object]) -> bool:
+        """Merge a shadow message; notify (and report True) only if state changed.
+
+        Like set_online, a no-op update is silent: an empty-payload shadow message
+        echoed back on the shadow/# wildcard must not fire a listener.
+        """
+        changed = self.shadow.merge(message)
+        if changed:
+            self._notify()
+        return changed
 
     def apply_event(self, event: DeviceEvent, *, now: float | None = None) -> None:
         self.last_event = event

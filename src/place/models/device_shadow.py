@@ -27,6 +27,7 @@ given model doesn't emit it, so absence stays distinct from a real zero.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any
@@ -199,8 +200,17 @@ class PlaceDeviceShadow:
             **{attr: _num(reported.get(key)) for attr, key in _TELEMETRY.items()},
         )
 
-    def merge(self, partial: dict[str, Any]) -> None:
-        """Merge a sparse shadow update into the current state."""
+    def merge(self, partial: dict[str, Any]) -> bool:
+        """Merge a sparse shadow update into the current state.
+
+        Returns whether the merge actually changed any field. Callers gate their
+        change notifications on this, so an empty or value-identical update (an
+        empty-payload shadow message echoed back on the shadow/# wildcard, or a
+        retained one) stays a silent no-op. Snapshotting the whole shadow and
+        comparing keeps that judgment in one place, rather than threading a
+        changed-flag through every field assignment.
+        """
+        before = deepcopy(self)
         reported = partial.get("state", partial).get("reported", partial)
         if "coAlarmStatus" in reported:
             self.co_alarm_status = _parse_alarm(reported["coAlarmStatus"])
@@ -233,3 +243,4 @@ class PlaceDeviceShadow:
             self.temperature_alert_status = _num(reported["temperatureAlertStatus"])
         if "humidityAlertStatus" in reported:
             self.humidity_alert_status = _num(reported["humidityAlertStatus"])
+        return self != before

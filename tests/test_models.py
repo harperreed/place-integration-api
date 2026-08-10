@@ -163,7 +163,7 @@ def test_merge_sparse_update() -> None:
 
     assert shadow.co_alarm_status is AlarmStatus.IDLE
 
-    shadow.merge({"state": {"reported": {"coAlarmStatus": 3}}})
+    _ = shadow.merge({"state": {"reported": {"coAlarmStatus": 3}}})
 
     # Updated fields
     assert shadow.co_alarm_status is AlarmStatus.ALARM
@@ -218,7 +218,7 @@ def test_merge_updates_a_new_hazard_in_place() -> None:
     """A sparse update to a new hazard changes only that field."""
     shadow = PlaceDeviceShadow.from_shadow(SIX_HAZARD_SHADOW)
 
-    shadow.merge({"state": {"reported": {"vocAlarmStatus": 3}}})
+    _ = shadow.merge({"state": {"reported": {"vocAlarmStatus": 3}}})
 
     assert shadow.voc_alarm_status is AlarmStatus.ALARM          # updated
     assert shadow.aqi_alarm_status is AlarmStatus.PRE_ALARM      # unchanged
@@ -275,11 +275,31 @@ def test_merge_updates_telemetry_in_place() -> None:
     """A sparse update to one live value changes only that field."""
     s = PlaceDeviceShadow.from_shadow(REAL_PL1AS_SHADOW)
 
-    s.merge({"state": {"reported": {"coPpm": 42}}})
+    _ = s.merge({"state": {"reported": {"coPpm": 42}}})
 
     assert s.co_ppm == 42                       # updated
     assert s.humidity == 53                     # unchanged
     assert s.temperature_c == 23.9185791015625  # unchanged
+
+
+# --- merge reports whether it changed anything (so callers emit on change) ----
+
+def test_merge_returns_true_when_a_value_changes() -> None:
+    """merge reports a real change, so callers can notify only when state moved."""
+    s = PlaceDeviceShadow.from_shadow(REAL_PL1AS_SHADOW)
+    assert s.merge({"state": {"reported": {"coPpm": 999}}}) is True
+
+
+def test_merge_returns_false_when_nothing_changes() -> None:
+    """An empty or value-identical update is a no-op: merge reports no change.
+
+    This is what lets the client suppress the spurious update it would otherwise
+    fire for an empty-payload shadow message (our own shadow/get echoed back on
+    the shadow/# wildcard, or a retained one).
+    """
+    s = PlaceDeviceShadow.from_shadow(REAL_PL1AS_SHADOW)
+    assert s.merge({}) is False
+    assert s.merge({"state": {"reported": {"coPpm": s.co_ppm}}}) is False
 
 
 # --- App-known reported fields beyond the base PL1AS capture ------------------
@@ -320,7 +340,7 @@ def test_merge_updates_methane_and_flags_in_place() -> None:
     """A sparse update to methane/flags changes only the provided fields."""
     s = PlaceDeviceShadow.from_shadow(REPORTED_EXTRAS_SHADOW)
 
-    s.merge({"state": {"reported": {"methanePpm": 12, "inChattyMode": True}}})
+    _ = s.merge({"state": {"reported": {"methanePpm": 12, "inChattyMode": True}}})
 
     assert s.methane_ppm == 12           # updated
     assert s.in_chatty_mode is True      # updated
@@ -359,7 +379,7 @@ def test_merge_updates_health_objects_in_place() -> None:
     """A sparse update to a health object replaces only that object."""
     s = PlaceDeviceShadow.from_shadow(HEALTH_SHADOW)
 
-    s.merge({"state": {"reported": {"endOfLife": {"system": 1}}}})
+    _ = s.merge({"state": {"reported": {"endOfLife": {"system": 1}}}})
 
     assert s.end_of_life == {"system": 1}  # updated
     assert s.faults == {                    # unchanged
@@ -391,7 +411,7 @@ def test_merge_updates_alert_status_in_place() -> None:
     """A sparse update to one alert status changes only that field."""
     s = PlaceDeviceShadow.from_shadow(ALERT_STATUS_SHADOW)
 
-    s.merge({"state": {"reported": {"humidityAlertStatus": 1}}})
+    _ = s.merge({"state": {"reported": {"humidityAlertStatus": 1}}})
 
     assert s.humidity_alert_status == 1     # updated
     assert s.temperature_alert_status == 2  # unchanged

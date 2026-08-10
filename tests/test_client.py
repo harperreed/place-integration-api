@@ -193,6 +193,19 @@ async def test_shadow_message_updates_device_and_emits_update() -> None:
     await client.stop()
 
 
+async def test_noop_shadow_message_does_not_emit_update() -> None:
+    # An empty-payload shadow message — our own shadow/get echoed back on the
+    # shadow/# wildcard — merges to a no-op and must NOT emit a spurious update.
+    client, conn = await _started_client("Place_PL1AS_EXAMPLE")
+    updates: list[PlaceDevice] = []
+    _ = client.on_update(updates.append)
+
+    conn.on_message("$aws/things/Place_PL1AS_EXAMPLE/shadow/get/accepted", b"")
+
+    assert updates == []
+    await client.stop()
+
+
 async def test_event_message_routes_and_emits_event() -> None:
     client, conn = await _started_client("Place_PL1AS_EXAMPLE")
     events: list[DeviceEvent] = []

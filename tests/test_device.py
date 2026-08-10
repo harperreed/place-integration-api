@@ -36,7 +36,7 @@ def test_apply_shadow_merges_and_notifies() -> None:
     seen: list[PlaceDevice] = []
     _ = dev.add_listener(seen.append)
 
-    dev.apply_shadow({"state": {"reported": {"coPpm": 9}}})
+    _ = dev.apply_shadow({"state": {"reported": {"coPpm": 9}}})
 
     assert dev.shadow.co_ppm == 9
     assert dev.shadow.smoke_alarm_status is AlarmStatus.IDLE  # untouched key persists
@@ -91,7 +91,7 @@ def test_unsubscribe_stops_notifications() -> None:
     unsubscribe = dev.add_listener(seen.append)
 
     unsubscribe()
-    dev.apply_shadow({"state": {"reported": {"coPpm": 1}}})
+    _ = dev.apply_shadow({"state": {"reported": {"coPpm": 1}}})
 
     assert seen == []
 
@@ -100,6 +100,27 @@ def test_from_discovery_without_thing_name_is_rejected() -> None:
     bad = DiscoverDevice.from_dict({"deviceId": "dev-1"})
     with pytest.raises(ValueError):
         _ = PlaceDevice.from_discovery(bad)
+
+
+def test_apply_shadow_notifies_only_on_change() -> None:
+    """A no-op merge (empty or value-identical shadow message) must not notify.
+
+    Mirrors set_online: notify on real change only. Prevents the spurious update
+    an empty-payload shadow message — our own shadow/get echoed back on the
+    shadow/# wildcard — would otherwise fire on every connect.
+    """
+    dev = PlaceDevice.from_discovery(_discover())  # _discover() → co_ppm=3
+    seen: list[PlaceDevice] = []
+    _ = dev.add_listener(seen.append)
+
+    assert dev.apply_shadow({}) is False  # empty payload → no change → no notify
+    assert seen == []
+
+    assert dev.apply_shadow({"state": {"reported": {"coPpm": 9}}}) is True  # changed
+    assert seen == [dev]
+
+    assert dev.apply_shadow({"state": {"reported": {"coPpm": 9}}}) is False  # same value
+    assert seen == [dev]  # still only the one notification
 
 
 def test_set_online_notifies_only_on_change() -> None:
