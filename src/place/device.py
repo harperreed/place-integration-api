@@ -25,6 +25,10 @@ class PlaceDevice:
     device_id: str | None = None
     name: str | None = None
     model: str | None = None
+    # Discovery-time metadata: firmware for a HA device registry sw_version,
+    # location for its suggested_area. Static — set at discovery, not live.
+    firmware_version: str | None = None
+    location: str | None = None
     online: bool | None = None
     last_event: DeviceEvent | None = None
     # Monotonic timestamp of the last motionDetected pulse (see apply_event/motion).
@@ -43,6 +47,8 @@ class PlaceDevice:
             device_id=discovered.device_id,
             name=discovered.device_name,
             model=discovered.model_number,
+            firmware_version=discovered.firmware_version,
+            location=discovered.location,
             online=discovered.online,
         )
 

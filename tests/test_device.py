@@ -15,6 +15,8 @@ def _discover() -> DiscoverDevice:
             "deviceId": "dev-1",
             "deviceName": "Hallway",
             "modelNumber": "PL1AS",
+            "firmwareVersion": "1.2.3",
+            "location": "Upstairs",
             "online": True,
             "shadow": {"state": {"reported": {"coPpm": 3, "smokeAlarmStatus": 0}}},
         }
@@ -26,6 +28,9 @@ def test_from_discovery_maps_identity_and_shadow() -> None:
     assert dev.thing_name == "Place_PL1AS_EXAMPLE"
     assert dev.device_id == "dev-1"
     assert dev.name == "Hallway"
+    assert dev.model == "PL1AS"
+    assert dev.firmware_version == "1.2.3"  # HA device registry sw_version
+    assert dev.location == "Upstairs"  # HA suggested_area
     assert dev.online is True
     assert dev.shadow.co_ppm == 3
     assert dev.shadow.smoke_alarm_status is AlarmStatus.IDLE
