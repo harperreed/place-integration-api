@@ -17,6 +17,9 @@ model parses the whole of it:
 * Device health sub-objects — ``faults`` (per-sensor fault bits) and
   ``endOfLife`` (detector expiry) — passed through as raw dicts, since their
   full schema varies by model and isn't yet pinned.
+* Temperature/humidity alert-status codes (``0`` = no active alert; non-zero
+  codes not yet enumerated); the paired threshold *settings* are deliberately
+  not surfaced by this read-only model.
 
 Each added field is ``None`` (telemetry) or ``NOT_PRESENT`` (hazards) when a
 given model doesn't emit it, so absence stays distinct from a real zero.
@@ -167,6 +170,11 @@ class PlaceDeviceShadow:
     # Device health sub-objects, passed through as-is (schema varies by model).
     faults: dict[str, Any] | None = None
     end_of_life: dict[str, Any] | None = None
+    # Temperature/humidity alert-status codes. These are integer codes (0 = no
+    # active alert); typed float for consistency with the model's other reported
+    # scalars (see _num). A non-zero code signals an alert state not yet enumerated.
+    temperature_alert_status: float | None = None
+    humidity_alert_status: float | None = None
 
     @staticmethod
     def from_shadow(shadow: dict[str, Any]) -> "PlaceDeviceShadow":
@@ -186,6 +194,8 @@ class PlaceDeviceShadow:
             in_chatty_mode=_bool(reported.get("inChattyMode")),
             faults=_obj(reported.get("faults")),
             end_of_life=_obj(reported.get("endOfLife")),
+            temperature_alert_status=_num(reported.get("temperatureAlertStatus")),
+            humidity_alert_status=_num(reported.get("humidityAlertStatus")),
             **{attr: _num(reported.get(key)) for attr, key in _TELEMETRY.items()},
         )
 
@@ -219,3 +229,7 @@ class PlaceDeviceShadow:
             self.faults = _obj(reported["faults"])
         if "endOfLife" in reported:
             self.end_of_life = _obj(reported["endOfLife"])
+        if "temperatureAlertStatus" in reported:
+            self.temperature_alert_status = _num(reported["temperatureAlertStatus"])
+        if "humidityAlertStatus" in reported:
+            self.humidity_alert_status = _num(reported["humidityAlertStatus"])

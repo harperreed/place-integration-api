@@ -95,6 +95,20 @@ HEALTH_SHADOW = {
     }
 }
 
+# Temperature/humidity alert status: integer codes the device reports alongside
+# each hazard. A live "base" PL1AS reports both as 0 (no active alert); a non-zero
+# code signals an alert state we haven't enumerated (the paired *AlertThresholds
+# have high/low bounds, so the code likely distinguishes them). The thresholds are
+# user settings, not device state, so the read-only model doesn't surface them.
+ALERT_STATUS_SHADOW = {
+    "state": {
+        "reported": {
+            "temperatureAlertStatus": 2,
+            "humidityAlertStatus": 0,
+        }
+    }
+}
+
 
 # --- The three hazards the integration has always consumed -------------------
 
@@ -351,3 +365,31 @@ def test_merge_updates_health_objects_in_place() -> None:
         "corruptNvm": False,
         "coSens": True,
     }
+
+
+# --- Device health: temperature/humidity alert status ------------------------
+
+def test_from_shadow_parses_alert_status() -> None:
+    """Temperature/humidity alert-status codes parse off the shadow."""
+    s = PlaceDeviceShadow.from_shadow(ALERT_STATUS_SHADOW)
+
+    assert s.temperature_alert_status == 2
+    assert s.humidity_alert_status == 0
+
+
+def test_alert_status_absent_is_none() -> None:
+    """A device that omits alert status leaves it None, distinct from a real 0."""
+    s = PlaceDeviceShadow.from_shadow({"state": {"reported": {"smokeAlarmStatus": 0}}})
+
+    assert s.temperature_alert_status is None
+    assert s.humidity_alert_status is None
+
+
+def test_merge_updates_alert_status_in_place() -> None:
+    """A sparse update to one alert status changes only that field."""
+    s = PlaceDeviceShadow.from_shadow(ALERT_STATUS_SHADOW)
+
+    s.merge({"state": {"reported": {"humidityAlertStatus": 1}}})
+
+    assert s.humidity_alert_status == 1     # updated
+    assert s.temperature_alert_status == 2  # unchanged
