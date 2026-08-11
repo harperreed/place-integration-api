@@ -35,6 +35,12 @@ class PlaceDevice:
     # Monotonic, not wall-clock: it exists for elapsed-time math, not display —
     # the event's own .timestamp carries the device-reported wall-clock instead.
     last_motion_at: float | None = None
+    # Monotonic timestamp of the last shadow answer that carried reported state (a
+    # shadow/get/accepted reply or a spontaneous update). This is the liveness
+    # anchor a HA coordinator reads for per-device availability: a live device
+    # answers shadow/get, a dead one does not. Monotonic for elapsed-time math, not
+    # display. Starts None — discovery arrives over HTTPS, not as an MQTT answer.
+    last_shadow_at: float | None = None
     _listeners: list[Listener] = field(default_factory=list, repr=False, compare=False)
 
     @classmethod
@@ -61,12 +67,19 @@ class PlaceDevice:
 
         return _unsubscribe
 
-    def apply_shadow(self, message: dict[str, object]) -> bool:
+    def apply_shadow(self, message: dict[str, object], *, now: float | None = None) -> bool:
         """Merge a shadow message; notify (and report True) only if state changed.
 
         Like set_online, a no-op update is silent: an empty-payload shadow message
         echoed back on the shadow/# wildcard must not fire a listener.
+
+        Independently, a message that carries reported state stamps last_shadow_at
+        — even when it changes nothing — because a device answering at all proves
+        it is alive. That liveness stamp is silent: availability is read by polling
+        the timestamp, not pushed. ``now`` is injectable for tests.
         """
+        if PlaceDeviceShadow.carries_reported_state(message):
+            self.last_shadow_at = time.monotonic() if now is None else now
         changed = self.shadow.merge(message)
         if changed:
             self._notify()

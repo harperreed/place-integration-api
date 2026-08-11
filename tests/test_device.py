@@ -128,6 +128,47 @@ def test_apply_shadow_notifies_only_on_change() -> None:
     assert seen == [dev]  # still only the one notification
 
 
+def test_apply_shadow_stamps_last_shadow_at_when_device_answers() -> None:
+    """A shadow message carrying reported state proves the device is alive.
+
+    last_shadow_at anchors HA availability: a live device answers shadow/get, a
+    dead one does not. Discovery arrives over HTTPS, not MQTT, so a freshly
+    discovered device has not "answered" yet — the stamp starts None.
+    """
+    dev = PlaceDevice.from_discovery(_discover())
+    assert dev.last_shadow_at is None
+
+    _ = dev.apply_shadow({"state": {"reported": {"coPpm": 9}}}, now=100.0)
+
+    assert dev.last_shadow_at == 100.0
+
+
+def test_apply_shadow_stamps_even_when_state_is_unchanged() -> None:
+    """A device answering with unchanged state is still alive, so recency must
+    advance even though the merge is a no-op that fires no listener.
+    """
+    dev = PlaceDevice.from_discovery(_discover())  # _discover() → co_ppm=3
+    seen: list[PlaceDevice] = []
+    _ = dev.add_listener(seen.append)
+
+    changed = dev.apply_shadow({"state": {"reported": {"coPpm": 3}}}, now=200.0)
+
+    assert changed is False  # same value → no state change
+    assert seen == []  # → no notification (emit-on-change preserved)
+    assert dev.last_shadow_at == 200.0  # but recency advances: it answered
+
+
+def test_apply_shadow_empty_payload_does_not_stamp_last_shadow_at() -> None:
+    """An empty-payload echo — our own shadow/get bounced off the shadow/# wildcard
+    — is not the device answering, so it must not count as liveness.
+    """
+    dev = PlaceDevice.from_discovery(_discover())
+
+    _ = dev.apply_shadow({}, now=300.0)
+
+    assert dev.last_shadow_at is None
+
+
 def test_set_online_notifies_only_on_change() -> None:
     dev = PlaceDevice.from_discovery(_discover())  # _discover() → online=True
     seen: list[PlaceDevice] = []

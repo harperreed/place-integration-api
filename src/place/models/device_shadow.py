@@ -200,6 +200,24 @@ class PlaceDeviceShadow:
             **{attr: _num(reported.get(key)) for attr, key in _TELEMETRY.items()},
         )
 
+    @staticmethod
+    def carries_reported_state(message: dict[str, Any]) -> bool:
+        """Whether a shadow message carries non-empty reported state.
+
+        True means a device answered with its own state — a shadow/get/accepted
+        reply or a spontaneous shadow/update/accepted — which is what proves it is
+        alive. False for an empty-payload echo (a shadow/get bounced back off the
+        shadow/# wildcard), a delta (AWS pushing desired state, not the device
+        answering), and a get/rejected error. PlaceDevice stamps last_shadow_at
+        whenever this holds, since a device that answers at all is alive.
+
+        Reuses _obj so the loosely-typed JSON is laundered through the same typed
+        boundary from_shadow/merge use, rather than narrowing a bare dict inline.
+        """
+        state = _obj(message.get("state"))
+        reported = _obj(state.get("reported")) if state is not None else None
+        return bool(reported)
+
     def merge(self, partial: dict[str, Any]) -> bool:
         """Merge a sparse shadow update into the current state.
 
