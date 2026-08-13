@@ -26,9 +26,7 @@ class Provider:
             )
             data = await resp.json()
         except ClientError:
-            transport_error = PlaceDiscoveryError(
-                "could not reach PLACE discovery"
-            )
+            transport_error = PlaceDiscoveryError("could not reach PLACE discovery")
         if transport_error is not None:
             raise transport_error
         assert data is not None

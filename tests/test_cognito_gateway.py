@@ -342,9 +342,7 @@ def test_srp_login_classifies_forced_password_change_without_secret_chain(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     def _force_change(*_args: object, **_kwargs: object) -> dict[str, object]:
-        raise aws_srp.ForceChangePasswordException(
-            "SECRET-CANARY ACCOUNT-CANARY"
-        )
+        raise aws_srp.ForceChangePasswordException("SECRET-CANARY ACCOUNT-CANARY")
 
     monkeypatch.setattr(srp_auth, "get_tokens_via_srp", _force_change)
     gateway = RealCognitoGateway(PlaceConfig())
