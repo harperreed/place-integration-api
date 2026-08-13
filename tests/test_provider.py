@@ -1,6 +1,9 @@
+# ABOUTME: Tests PLACE provider discovery parsing, error safety, and legacy commands.
+# ABOUTME: Uses hand-written auth and response fakes without live account calls.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 from aiohttp import ClientError
@@ -111,14 +114,23 @@ def test_provider_disable_sends_disable_command() -> None:
     assert result == payload
 
 
-def test_provider_discover_raises_place_discovery_error_when_rejected() -> None:
+def test_provider_discover_rejection_does_not_leak_service_response(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """A fulfillment response with success=false must surface as PlaceDiscoveryError.
 
     HA's config_flow catches the SDK taxonomy to tell invalid_auth from
     cannot_connect. A bare RuntimeError is uncatchable through that contract, and
     its "Home Assistant error" label is untrue — the rejection is PLACE's.
     """
-    payload = {"success": False, "message": "denied by policy"}
+    payload = {
+        "success": False,
+        "message": "SECRET-MESSAGE-CANARY",
+        "data": {
+            "account": "ACCOUNT-CANARY",
+            "devices": [{"deviceId": "DEVICE-CANARY"}],
+        },
+    }
 
     class DummyAuth(AbstractAuth):
         def __init__(self) -> None:
@@ -135,20 +147,24 @@ def test_provider_discover_raises_place_discovery_error_when_rejected() -> None:
             return DummyResponse()
 
     provider = Provider(DummyAuth())
-    with pytest.raises(PlaceDiscoveryError) as excinfo:
-        _ = asyncio.run(provider.discover())
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(PlaceDiscoveryError) as excinfo:
+            _ = asyncio.run(provider.discover())
 
-    assert "denied by policy" in str(excinfo.value)
-    assert "Home Assistant" not in str(excinfo.value)
+    assert str(excinfo.value) == "PLACE discovery rejected"
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert "CANARY" not in caplog.text
 
 
-def test_provider_discover_wraps_transport_failure_as_place_discovery_error() -> None:
+def test_provider_discover_sanitizes_transport_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """A network blip reaching the discovery endpoint is a discovery failure.
 
     aiohttp raises ClientError on a connection failure; unwrapped it escapes as a
     non-PlaceError the config_flow can't catch. PlaceConnectionError is reserved
-    for the MQTT transport, so an HTTPS discovery blip maps to PlaceDiscoveryError
-    with the original error chained.
+    for the MQTT transport, so an HTTPS discovery blip maps to PlaceDiscoveryError.
     """
 
     class DummyAuth(AbstractAuth):
@@ -159,13 +175,17 @@ def test_provider_discover_wraps_transport_failure_as_place_discovery_error() ->
             return "token"
 
         async def request(self, method, url, **kwargs):
-            raise ClientError("connection reset")
+            raise ClientError("SECRET-CANARY for ACCOUNT-CANARY")
 
     provider = Provider(DummyAuth())
-    with pytest.raises(PlaceDiscoveryError) as excinfo:
-        _ = asyncio.run(provider.discover())
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(PlaceDiscoveryError) as excinfo:
+            _ = asyncio.run(provider.discover())
 
-    assert isinstance(excinfo.value.__cause__, ClientError)
+    assert str(excinfo.value) == "could not reach PLACE discovery"
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert "CANARY" not in caplog.text
 
 
 def test_provider_discover_lets_place_auth_error_propagate() -> None:
@@ -175,17 +195,21 @@ def test_provider_discover_lets_place_auth_error_propagate() -> None:
     not remap it to PlaceDiscoveryError, or config_flow loses the reauth signal.
     """
 
+    auth_error = PlaceAuthError("typed auth failure")
+
     class DummyAuth(AbstractAuth):
         def __init__(self) -> None:
             pass
 
         async def async_get_access_token(self) -> str:
-            raise PlaceAuthError("token refresh failed")
+            raise auth_error
 
         async def request(self, method, url, **kwargs):
             _ = await self.async_get_access_token()
             raise AssertionError("unreachable: token fetch should have raised")
 
     provider = Provider(DummyAuth())
-    with pytest.raises(PlaceAuthError):
+    with pytest.raises(PlaceAuthError) as caught:
         _ = asyncio.run(provider.discover())
+
+    assert caught.value is auth_error
