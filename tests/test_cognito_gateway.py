@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 
-from place.auth import cognito_gateway, srp_auth
+from place.auth import aws_srp, cognito_gateway, srp_auth
 from place.auth.cognito_gateway import RealCognitoGateway
 from place.auth.srp_auth import get_iot_credentials, refresh_tokens, respond_mfa
 from place.config import PlaceConfig
@@ -335,6 +335,64 @@ def test_srp_login_classifies_credential_rejections(
     assert str(caught.value) == "srp login rejected"
     assert "TOKEN-CANARY" not in str(caught.value)
     assert "PASSWORD-CANARY" not in str(caught.value)
+
+
+def test_srp_login_classifies_forced_password_change_without_secret_chain(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def _force_change(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise aws_srp.ForceChangePasswordException(
+            "SECRET-CANARY ACCOUNT-CANARY"
+        )
+
+    monkeypatch.setattr(srp_auth, "get_tokens_via_srp", _force_change)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(PlaceInvalidAuthError) as caught:
+        _ = gateway.srp_login("ACCOUNT-CANARY", "PASSWORD-CANARY")
+
+    assert str(caught.value) == "srp login rejected"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "CANARY" not in caplog.text
+
+
+def test_srp_login_classifies_unsupported_challenge_without_secret_chain(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def _unsupported(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise NotImplementedError("SECRET-CANARY ACCOUNT-CANARY")
+
+    monkeypatch.setattr(srp_auth, "get_tokens_via_srp", _unsupported)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(PlaceAuthError) as caught:
+        _ = gateway.srp_login("ACCOUNT-CANARY", "PASSWORD-CANARY")
+
+    assert type(caught.value) is PlaceAuthError
+    assert str(caught.value) == "srp login failed (unsupported challenge)"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "CANARY" not in caplog.text
+
+
+def test_srp_login_does_not_translate_unknown_programmer_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = ValueError("programmer contract violation")
+
+    def _bug(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise source
+
+    monkeypatch.setattr(srp_auth, "get_tokens_via_srp", _bug)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(ValueError) as caught:
+        _ = gateway.srp_login("alice", "password")
+
+    assert caught.value is source
 
 
 @pytest.mark.parametrize(

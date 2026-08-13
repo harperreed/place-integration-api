@@ -15,6 +15,7 @@ from ..exceptions import (
 )
 from ..models import Credentials
 from . import srp_auth
+from .aws_srp import ForceChangePasswordException
 
 _T = TypeVar("_T")
 
@@ -22,6 +23,7 @@ _TRANSIENT_AUTH_CODES = frozenset(
     {"TooManyRequestsException", "InternalErrorException", "ExternalServiceException"}
 )
 _NO_INVALID_AUTH_CODES: frozenset[str] = frozenset()
+_NO_EXCEPTION_TYPES: tuple[type[Exception], ...] = ()
 
 
 def _as_place_auth_error(
@@ -29,6 +31,8 @@ def _as_place_auth_error(
     call: Callable[[], _T],
     *,
     invalid_codes: frozenset[str] = _NO_INVALID_AUTH_CODES,
+    invalid_exceptions: tuple[type[Exception], ...] = _NO_EXCEPTION_TYPES,
+    unsupported_exceptions: tuple[type[Exception], ...] = _NO_EXCEPTION_TYPES,
 ) -> _T:
     """Run a Cognito call and expose a typed, secret-safe SDK error."""
     translated_error: PlaceAuthError
@@ -53,6 +57,10 @@ def _as_place_auth_error(
         translated_error = PlaceTransientAuthError(
             f"{action} temporarily failed ({type(exc).__name__})"
         )
+    except invalid_exceptions:
+        translated_error = PlaceInvalidAuthError(f"{action} rejected")
+    except unsupported_exceptions:
+        translated_error = PlaceAuthError(f"{action} failed (unsupported challenge)")
     raise translated_error
 
 
@@ -91,6 +99,8 @@ class RealCognitoGateway:
                     "UserNotConfirmedException",
                 }
             ),
+            invalid_exceptions=(ForceChangePasswordException,),
+            unsupported_exceptions=(NotImplementedError,),
         )
 
     def refresh(self, refresh_token: str) -> dict[str, Any]:
