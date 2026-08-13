@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from types import TracebackType
@@ -63,6 +64,18 @@ class ScriptedAuth:
         if self._errors:
             raise self._errors.pop(0)
         return _creds()
+
+
+class StopThenFailAuth:
+    """Stops its connection immediately before raising a scripted SDK error."""
+
+    def __init__(self, stop: Callable[[], None], error: PlaceError) -> None:
+        self._stop: Callable[[], None] = stop
+        self._error: PlaceError = error
+
+    async def async_get_iot_credentials(self) -> Credentials:
+        self._stop()
+        raise self._error
 
 
 class ScriptedTransport:
@@ -241,11 +254,13 @@ class FlakyTransport:
         fail_times: int,
         stop: Callable[[], None],
         error_message: str = "dropped",
+        stop_before_error: bool = False,
     ) -> None:
         self._attempt: int = attempt
         self._fail_times: int = fail_times
         self._stop: Callable[[], None] = stop
         self._error_message: str = error_message
+        self._stop_before_error: bool = stop_before_error
 
     async def __aenter__(self) -> "FlakyTransport":
         return self
@@ -271,11 +286,12 @@ class FlakyTransport:
 
     async def messages(self) -> AsyncIterator[tuple[str, bytes]]:
         if self._attempt <= self._fail_times:
+            if self._stop_before_error:
+                self._stop()
             raise MqttError(self._error_message)
         self._stop()
         for _ in ():  # never runs; the empty loop makes this an async generator
             yield ("", b"")
-
 
 def _flaky_factory(
     fail_times: int,
@@ -567,6 +583,31 @@ async def test_mqtt_failure_notifies_with_sanitized_error_and_retries(
     assert slept == [1.0]
 
 
+async def test_mqtt_error_callback_has_no_active_broker_exception() -> None:
+    canary = "active-mqtt-secret-canary"
+    active_exceptions: list[BaseException | None] = []
+    seen: list[PlaceError] = []
+
+    def record_error(error: PlaceError) -> None:
+        seen.append(error)
+        active_exceptions.append(sys.exception())
+
+    conn = PlaceConnection(
+        PlaceConfig(reconnect_min_sec=0.0, reconnect_max_sec=0.0),
+        FakeAuth(_creds()),
+        transport_factory=_flaky_factory(1, lambda: conn.stop, canary),
+        on_message=lambda topic, payload: None,
+        on_error=record_error,
+        sleep=lambda delay: _noop_sleep([], delay),
+    )
+
+    await conn.run()
+
+    assert len(seen) == 1
+    assert active_exceptions == [None]
+    assert all(canary not in str(exc) for exc in active_exceptions)
+
+
 async def test_non_auth_place_error_notifies_and_retries() -> None:
     error = PlaceConnectionError("credential gateway unavailable")
     auth = ScriptedAuth([error])
@@ -624,3 +665,56 @@ async def test_error_callback_failure_does_not_stop_reconnect_or_leak_message(
     assert auth.calls == 2
     assert slept == [1.0]
     assert canary not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        PlaceInvalidAuthError("stopped invalid auth"),
+        PlaceConnectionError("stopped SDK failure"),
+    ],
+)
+async def test_stopped_auth_failure_does_not_notify_or_backoff(error: PlaceError) -> None:
+    seen: list[PlaceError] = []
+    slept: list[float] = []
+    conn = PlaceConnection(
+        PlaceConfig(reconnect_min_sec=1.0, reconnect_max_sec=60.0),
+        StopThenFailAuth(lambda: conn.stop(), error),
+        transport_factory=lambda cfg, creds: pytest.fail(
+            "transport must not be created after stopped authentication"
+        ),
+        on_message=lambda topic, payload: None,
+        on_error=seen.append,
+        sleep=lambda delay: _noop_sleep(slept, delay),
+    )
+
+    await conn.run()
+
+    assert seen == []
+    assert slept == []
+
+
+async def test_stopped_mqtt_failure_does_not_notify_or_backoff() -> None:
+    seen: list[PlaceError] = []
+    slept: list[float] = []
+
+    def factory(cfg: PlaceConfig, creds: Credentials) -> MqttTransport:
+        _ = cfg
+        _ = creds
+        return FlakyTransport(
+            1, 1, conn.stop, "stopped MQTT failure", stop_before_error=True
+        )
+
+    conn = PlaceConnection(
+        PlaceConfig(reconnect_min_sec=1.0, reconnect_max_sec=60.0),
+        FakeAuth(_creds()),
+        transport_factory=factory,
+        on_message=lambda topic, payload: None,
+        on_error=seen.append,
+        sleep=lambda delay: _noop_sleep(slept, delay),
+    )
+
+    await conn.run()
+
+    assert seen == []
+    assert slept == []

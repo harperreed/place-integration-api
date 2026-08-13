@@ -358,11 +358,12 @@ async def test_error_listener_mutation_and_failure_do_not_block_other_listeners(
 ) -> None:
     client, conn = await _started_client("Place_PL1AS_EXAMPLE")
     seen: list[PlaceError] = []
+    self_seen: list[PlaceError] = []
     unsubscribe_self: Callable[[], None]
     canary = "consumer-callback-secret-canary"
 
     def remove_self(error: PlaceError) -> None:
-        _ = error
+        self_seen.append(error)
         unsubscribe_self()
 
     def broken_listener(error: PlaceError) -> None:
@@ -380,6 +381,7 @@ async def test_error_listener_mutation_and_failure_do_not_block_other_listeners(
         conn.on_error(second)
 
     assert seen == [first, second]
+    assert self_seen == [first]
     assert canary not in caplog.text
     await client.stop()
 

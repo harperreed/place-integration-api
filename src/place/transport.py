@@ -228,6 +228,9 @@ class PlaceConnection:
     async def run(self) -> None:
         attempt = 0
         while not self._stopped:
+            error_to_notify: PlaceError | None = None
+            backoff_error: BaseException | None = None
+            terminal = False
             try:
                 creds = await self._auth.async_get_iot_credentials()
                 async with self._transport_factory(self._config, creds) as transport:
@@ -251,17 +254,23 @@ class PlaceConnection:
                             self._on_state(False)
                 attempt = 0
             except PlaceInvalidAuthError as exc:
-                self._notify_error(exc)
-                break
+                error_to_notify = exc
+                terminal = True
             except MqttError as exc:
-                self._notify_error(PlaceConnectionError("MQTT connection failed"))
-                if self._stopped:
-                    break
-                await self._backoff(exc, attempt)
-                attempt += 1
+                error_to_notify = PlaceConnectionError("MQTT connection failed")
+                backoff_error = exc
             except PlaceError as exc:
-                self._notify_error(exc)
-                if self._stopped:
-                    break
-                await self._backoff(exc, attempt)
-                attempt += 1
+                error_to_notify = exc
+                backoff_error = exc
+
+            if error_to_notify is None:
+                continue
+            if self._stopped:
+                break
+            self._notify_error(error_to_notify)
+            if terminal or self._stopped:
+                break
+            if backoff_error is None:
+                raise AssertionError("retryable errors require a backoff source")
+            await self._backoff(backoff_error, attempt)
+            attempt += 1
