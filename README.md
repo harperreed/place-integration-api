@@ -4,8 +4,11 @@
 # PLACE integration API
 
 An async Python SDK for discovering Gentex PLACE devices and reading their live MQTT
-state. The current client is read-only: it subscribes to device data and publishes only
-AWS IoT shadow/get requests.
+state. The documented `PlaceClient` path used by Home Assistant is read-only: it
+subscribes to device data and publishes only empty AWS IoT shadow/get requests.
+Lower-level transport and provider primitives remain available for legacy and advanced
+SDK use; they are outside this read-only guarantee and are not documented as Home
+Assistant device controls.
 
 ## Install
 

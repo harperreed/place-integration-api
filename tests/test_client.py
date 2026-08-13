@@ -146,6 +146,24 @@ async def test_start_discovers_wires_subscriptions_and_launches() -> None:
     assert conn.stopped is True
 
 
+async def test_client_start_and_refresh_publish_only_empty_shadow_gets() -> None:
+    thing_names = ("Place_PL1AS_A", "Place_PL1AS_B")
+    client, conn = await _started_client(*thing_names)
+
+    try:
+        await client.async_refresh_shadow()
+
+        expected = [(shadow_get_topic(name), b"") for name in thing_names]
+        assert conn.connect_publishes == expected
+        assert conn.published == expected
+        assert all(
+            topic.endswith("/shadow/get") and payload == b""
+            for topic, payload in conn.connect_publishes + conn.published
+        )
+    finally:
+        await client.stop()
+
+
 async def test_start_uses_public_discovery_contract() -> None:
     public_discovered = [_discover("public-device")]
     provider = FakeProvider([_discover("provider-device")])
