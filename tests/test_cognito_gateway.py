@@ -407,3 +407,42 @@ def test_botocore_failure_is_transient_and_secret_safe(
 
     assert str(caught.value) == "token refresh temporarily failed (BotoCoreError)"
     assert "REFRESH-TOKEN-CANARY" not in str(caught.value)
+
+
+def test_client_error_translation_drops_secret_bearing_exception_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _client_error("NotAuthorizedException", "SECRET-CANARY")
+
+    def _reject(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise source
+
+    monkeypatch.setattr(srp_auth, "refresh_tokens", _reject)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(PlaceInvalidAuthError) as caught:
+        _ = gateway.refresh("REFRESH-TOKEN-CANARY")
+
+    assert "SECRET-CANARY" in str(source)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+def test_botocore_translation_drops_secret_bearing_exception_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = BotoCoreError()
+    source.args = ("SECRET-CANARY",)
+
+    def _fail(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise source
+
+    monkeypatch.setattr(srp_auth, "refresh_tokens", _fail)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(PlaceTransientAuthError) as caught:
+        _ = gateway.refresh("REFRESH-TOKEN-CANARY")
+
+    assert "SECRET-CANARY" in str(source)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None

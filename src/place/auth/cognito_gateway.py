@@ -31,6 +31,7 @@ def _as_place_auth_error(
     invalid_codes: frozenset[str] = _NO_INVALID_AUTH_CODES,
 ) -> _T:
     """Run a Cognito call and expose a typed, secret-safe SDK error."""
+    translated_error: PlaceAuthError
     try:
         return call()
     except ClientError as exc:
@@ -39,16 +40,18 @@ def _as_place_auth_error(
         error_details = cast(dict[str, object], error) if isinstance(error, dict) else {}
         code = str(error_details.get("Code", "UnknownClientError"))
         if code in invalid_codes:
-            raise PlaceInvalidAuthError(f"{action} rejected") from None
-        if code in _TRANSIENT_AUTH_CODES:
-            raise PlaceTransientAuthError(
+            translated_error = PlaceInvalidAuthError(f"{action} rejected")
+        elif code in _TRANSIENT_AUTH_CODES:
+            translated_error = PlaceTransientAuthError(
                 f"{action} temporarily failed ({code})"
-            ) from None
-        raise PlaceAuthError(f"{action} failed ({code})") from None
+            )
+        else:
+            translated_error = PlaceAuthError(f"{action} failed ({code})")
     except BotoCoreError as exc:
-        raise PlaceTransientAuthError(
+        translated_error = PlaceTransientAuthError(
             f"{action} temporarily failed ({type(exc).__name__})"
-        ) from None
+        )
+    raise translated_error
 
 
 class CognitoGateway(Protocol):
