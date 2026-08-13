@@ -15,6 +15,7 @@ from place.config import PlaceConfig
 from place.exceptions import (
     MfaRequired,
     PlaceAuthError,
+    PlaceError,
     PlaceInvalidAuthError,
     PlaceTransientAuthError,
 )
@@ -786,17 +787,180 @@ async def test_old_refresh_result_cannot_overwrite_account_switch() -> None:
 
     refresh_task = asyncio.create_task(auth.async_get_access_token())
     assert await asyncio.to_thread(gw.started.wait, 5)
-    gw._login = {
-        "AuthenticationResult": _auth_result(
-            AccessToken="access-new", IdToken="id-new", RefreshToken="refresh-new"
-        )
-    }
-    await auth.authenticate("new-account", "new-password")
-    gw.release.set()
+    try:
+        gw._login = {
+            "AuthenticationResult": _auth_result(
+                AccessToken="access-new",
+                IdToken="id-new",
+                RefreshToken="refresh-new",
+            )
+        }
+        await auth.authenticate("new-account", "new-password")
+    finally:
+        gw.release.set()
 
     assert await refresh_task == "access-new"
     assert auth._access_token == "access-new"  # pyright: ignore[reportPrivateUsage]
     assert auth._id_token == "id-new"  # pyright: ignore[reportPrivateUsage]
+
+
+class BlockingRefreshErrorGateway(FakeGateway):
+    """Block one old-principal refresh, then raise its scripted typed error."""
+
+    def __init__(self, error: PlaceError) -> None:
+        super().__init__(login={"AuthenticationResult": _auth_result()})
+        self.error = error
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def refresh(self, refresh_token: str) -> dict[str, Any]:
+        self.refresh_calls += 1
+        self.refresh_args.append(refresh_token)
+        self.started.set()
+        assert self.release.wait(timeout=5)
+        raise self.error
+
+
+@pytest.mark.parametrize("error_type", (PlaceInvalidAuthError, PlaceTransientAuthError))
+async def test_old_refresh_error_is_discarded_after_account_switch(
+    error_type: type[PlaceError],
+) -> None:
+    stale_error = error_type("stale old-principal refresh")
+    gw = BlockingRefreshErrorGateway(stale_error)
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("old-account", "old-password")
+    auth._access_token_expiry = 0.0  # pyright: ignore[reportPrivateUsage]
+
+    refresh_task = asyncio.create_task(auth.async_get_access_token())
+    assert await asyncio.to_thread(gw.started.wait, 5)
+    try:
+        gw._login = {
+            "AuthenticationResult": _auth_result(
+                AccessToken="access-new",
+                IdToken="id-new",
+                RefreshToken="refresh-new",
+            )
+        }
+        await auth.authenticate("new-account", "new-password")
+    finally:
+        gw.release.set()
+
+    assert await refresh_task == "access-new"
+    assert auth._username == "new-account"  # pyright: ignore[reportPrivateUsage]
+    assert auth._access_token == "access-new"  # pyright: ignore[reportPrivateUsage]
+    assert auth._id_token == "id-new"  # pyright: ignore[reportPrivateUsage]
+    assert auth._refresh_token == "refresh-new"  # pyright: ignore[reportPrivateUsage]
+    assert gw.refresh_calls == 1
+
+
+class BlockingCredentialErrorGateway(FakeGateway):
+    """Block one old-principal IoT exchange, then raise its scripted typed error."""
+
+    def __init__(self, error: PlaceError) -> None:
+        super().__init__(login={"AuthenticationResult": _auth_result()})
+        self.error = error
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def iot_credentials(self, id_token: str, access_token: str) -> Credentials:
+        self.iot_calls += 1
+        if id_token == "id-1":
+            self.started.set()
+            assert self.release.wait(timeout=5)
+            raise self.error
+        return Credentials(
+            access_key_id=f"key-{id_token}",
+            secret_access_key="secret",
+            session_token="session",
+            identity_id=f"identity-{id_token}",
+            expiration=datetime.now(timezone.utc) + timedelta(hours=5),
+        )
+
+
+@pytest.mark.parametrize(
+    "error_type", (PlaceAuthError, PlaceInvalidAuthError, PlaceTransientAuthError)
+)
+async def test_old_iot_error_is_discarded_after_account_switch(
+    error_type: type[PlaceError],
+) -> None:
+    stale_error = error_type("stale old-principal credential exchange")
+    gw = BlockingCredentialErrorGateway(stale_error)
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("old-account", "old-password")
+
+    credential_task = asyncio.create_task(auth.async_get_iot_credentials())
+    assert await asyncio.to_thread(gw.started.wait, 5)
+    try:
+        gw._login = {
+            "AuthenticationResult": _auth_result(
+                AccessToken="access-new",
+                IdToken="id-new",
+                RefreshToken="refresh-new",
+            )
+        }
+        await auth.authenticate("new-account", "new-password")
+    finally:
+        gw.release.set()
+
+    credentials = await credential_task
+
+    assert credentials.identity_id == "identity-id-new"
+    assert auth._username == "new-account"  # pyright: ignore[reportPrivateUsage]
+    assert auth._access_token == "access-new"  # pyright: ignore[reportPrivateUsage]
+    assert auth._iot_creds is credentials  # pyright: ignore[reportPrivateUsage]
+    assert gw.iot_calls == 2
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        PlaceInvalidAuthError("current refresh rejected"),
+        PlaceTransientAuthError("current refresh unavailable"),
+        RuntimeError("programmer error"),
+    ),
+)
+async def test_current_refresh_error_propagates_as_same_object(
+    error: Exception,
+) -> None:
+    gw = FakeGateway(
+        login={"AuthenticationResult": _auth_result()}, refresh_error=error
+    )
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("alice", "password")
+    auth._access_token_expiry = 0.0  # pyright: ignore[reportPrivateUsage]
+
+    with pytest.raises(type(error)) as caught:
+        await auth.async_get_access_token()
+
+    assert caught.value is error
+    assert gw.refresh_calls == 1
+
+
+class CredentialFailureGateway(FakeGateway):
+    """Raise a scripted IoT exchange exception without changing auth state."""
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__(login={"AuthenticationResult": _auth_result()})
+        self.error = error
+
+    def iot_credentials(self, id_token: str, access_token: str) -> Credentials:
+        self.iot_calls += 1
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    "error", (PlaceAuthError("current IoT error"), RuntimeError("programmer error"))
+)
+async def test_current_iot_error_propagates_as_same_object(error: Exception) -> None:
+    gw = CredentialFailureGateway(error)
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("alice", "password")
+
+    with pytest.raises(type(error)) as caught:
+        await auth.async_get_iot_credentials()
+
+    assert caught.value is error
+    assert gw.iot_calls == 1
 
 
 @pytest.mark.parametrize("refresh_token", ["", 123])

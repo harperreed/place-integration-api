@@ -15,6 +15,7 @@ from ..config import PlaceConfig
 from ..exceptions import (
     MfaRequired,
     PlaceAuthError,
+    PlaceError,
     PlaceInvalidAuthError,
     PlaceTransientAuthError,
 )
@@ -154,9 +155,15 @@ class CognitoAuth(AbstractAuth):
                     return self._access_token
                 generation = self._principal_generation
                 refresh_token = self._refresh_token
-                auth = dict(
-                    await asyncio.to_thread(self._gateway.refresh, refresh_token)
-                )
+                try:
+                    response = await asyncio.to_thread(
+                        self._gateway.refresh, refresh_token
+                    )
+                except PlaceError:
+                    if generation != self._principal_generation:
+                        continue
+                    raise
+                auth = dict(response)
                 if generation != self._principal_generation:
                     continue
                 self._install_tokens(auth)
@@ -174,9 +181,14 @@ class CognitoAuth(AbstractAuth):
                 generation = self._principal_generation
                 id_token = self._id_token
                 assert id_token is not None
-                creds = await asyncio.to_thread(
-                    self._gateway.iot_credentials, id_token, access_token
-                )
+                try:
+                    creds = await asyncio.to_thread(
+                        self._gateway.iot_credentials, id_token, access_token
+                    )
+                except PlaceError:
+                    if generation != self._principal_generation:
+                        continue
+                    raise
                 if generation != self._principal_generation:
                     continue
                 self._iot_creds = creds
