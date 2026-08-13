@@ -81,10 +81,10 @@ class CognitoAuth(AbstractAuth):
         auth = dict(await asyncio.to_thread(self._gateway.refresh, refresh_token))
         auth.setdefault("RefreshToken", refresh_token)
         if self._username != username:
-            self._mfa_challenge = None
-            self._mfa_session = None
             self._iot_creds = None
             self._iot_creds_expiry = None
+        self._mfa_challenge = None
+        self._mfa_session = None
         self._username = username
         self._store_tokens(auth)
 

@@ -347,6 +347,33 @@ async def test_authenticate_from_cache_switches_account_bound_state() -> None:
     assert state["_mfa_session"] is None
 
 
+async def test_authenticate_from_cache_clears_same_account_mfa_state() -> None:
+    far = datetime.now(timezone.utc) + timedelta(hours=5)
+    gw = FakeGateway(
+        login={"AuthenticationResult": _auth_result(RefreshToken="rt-old")},
+        refresh={
+            "AccessToken": "access-new",
+            "IdToken": "id-new",
+            "ExpiresIn": 3600,
+        },
+        creds=_creds(far),
+    )
+    cache = FakeCache()
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw, token_cache=cache)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("alice", "old-password")
+    old_iot_creds = await auth.async_get_iot_credentials()
+    vars(auth)["_mfa_challenge"] = "SOFTWARE_TOKEN_MFA"
+    vars(auth)["_mfa_session"] = "stale-mfa-session"
+    cache.data = {"username": "alice", "refresh_token": "rt-cached"}
+
+    await auth.authenticate_from_cache("alice")
+
+    state = vars(auth)
+    assert state["_mfa_challenge"] is None
+    assert state["_mfa_session"] is None
+    assert state["_iot_creds"] is old_iot_creds
+
+
 @pytest.mark.parametrize(
     "cached",
     [
