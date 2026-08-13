@@ -55,3 +55,19 @@ def test_version_is_exposed() -> None:
 
     assert isinstance(place.__version__, str)
     assert place.__version__  # non-empty
+
+
+def test_home_assistant_auth_contract_is_public() -> None:
+    from place import (
+        CognitoAuth,
+        PlaceAuthError,
+        PlaceClient,
+        PlaceInvalidAuthError,
+        PlaceTransientAuthError,
+    )
+
+    assert hasattr(CognitoAuth, "authenticate_from_cache")
+    assert hasattr(PlaceClient, "async_discover")
+    assert hasattr(PlaceClient, "on_error")
+    assert issubclass(PlaceInvalidAuthError, PlaceAuthError)
+    assert issubclass(PlaceTransientAuthError, PlaceAuthError)

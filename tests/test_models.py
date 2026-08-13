@@ -28,12 +28,12 @@ FULL_SHADOW = {
 SIX_HAZARD_SHADOW = {
     "state": {
         "reported": {
-            "smokeAlarmStatus": 3,          # ALARM
-            "coAlarmStatus": 0,             # IDLE
-            "heatAlarmStatus": 0,           # IDLE
-            "aqiAlarmStatus": 2,            # PRE_ALARM
-            "vocAlarmStatus": 5,            # HUSHED
-            "explosiveGasAlarmStatus": 4,   # CRITICAL_ALARM
+            "smokeAlarmStatus": 3,  # ALARM
+            "coAlarmStatus": 0,  # IDLE
+            "heatAlarmStatus": 0,  # IDLE
+            "aqiAlarmStatus": 2,  # PRE_ALARM
+            "vocAlarmStatus": 5,  # HUSHED
+            "explosiveGasAlarmStatus": 4,  # CRITICAL_ALARM
         }
     }
 }
@@ -114,6 +114,7 @@ ALERT_STATUS_SHADOW = {
 
 # --- The three hazards the integration has always consumed -------------------
 
+
 def test_from_shadow_full() -> None:
     """Test parsing a shadow payload."""
     shadow = PlaceDeviceShadow.from_shadow(FULL_SHADOW)
@@ -186,6 +187,7 @@ def test_alarm_status_enum_values() -> None:
 
 # --- The extra hazards larger models add -------------------------------------
 
+
 def test_from_shadow_parses_all_six_hazards() -> None:
     """All six hazard fields parse off the same reported shadow."""
     shadow = PlaceDeviceShadow.from_shadow(SIX_HAZARD_SHADOW)
@@ -220,13 +222,14 @@ def test_merge_updates_a_new_hazard_in_place() -> None:
 
     _ = shadow.merge({"state": {"reported": {"vocAlarmStatus": 3}}})
 
-    assert shadow.voc_alarm_status is AlarmStatus.ALARM          # updated
-    assert shadow.aqi_alarm_status is AlarmStatus.PRE_ALARM      # unchanged
+    assert shadow.voc_alarm_status is AlarmStatus.ALARM  # updated
+    assert shadow.aqi_alarm_status is AlarmStatus.PRE_ALARM  # unchanged
     assert shadow.explosive_gas_alarm_status is AlarmStatus.CRITICAL_ALARM
     assert shadow.smoke_alarm_status is AlarmStatus.ALARM
 
 
 # --- Live telemetry ----------------------------------------------------------
+
 
 def test_from_shadow_parses_live_telemetry() -> None:
     """The model surfaces the live status a real PL1AS reports."""
@@ -248,9 +251,7 @@ def test_from_shadow_parses_live_telemetry() -> None:
 
 def test_telemetry_absent_fields_are_none_not_zero() -> None:
     """A shadow that omits a live field leaves it None, distinct from a real 0."""
-    s = PlaceDeviceShadow.from_shadow(
-        {"state": {"reported": {"smokeAlarmStatus": 0}}}
-    )
+    s = PlaceDeviceShadow.from_shadow({"state": {"reported": {"smokeAlarmStatus": 0}}})
 
     assert s.co_ppm is None
     assert s.temperature_c is None
@@ -277,12 +278,13 @@ def test_merge_updates_telemetry_in_place() -> None:
 
     _ = s.merge({"state": {"reported": {"coPpm": 42}}})
 
-    assert s.co_ppm == 42                       # updated
-    assert s.humidity == 53                     # unchanged
+    assert s.co_ppm == 42  # updated
+    assert s.humidity == 53  # unchanged
     assert s.temperature_c == 23.9185791015625  # unchanged
 
 
 # --- merge reports whether it changed anything (so callers emit on change) ----
+
 
 def test_merge_returns_true_when_a_value_changes() -> None:
     """merge reports a real change, so callers can notify only when state moved."""
@@ -303,6 +305,7 @@ def test_merge_returns_false_when_nothing_changes() -> None:
 
 
 # --- App-known reported fields beyond the base PL1AS capture ------------------
+
 
 def test_from_shadow_parses_methane_and_reported_flags() -> None:
     """Methane ppm and the reported device flags parse off the shadow."""
@@ -342,12 +345,13 @@ def test_merge_updates_methane_and_flags_in_place() -> None:
 
     _ = s.merge({"state": {"reported": {"methanePpm": 12, "inChattyMode": True}}})
 
-    assert s.methane_ppm == 12           # updated
-    assert s.in_chatty_mode is True      # updated
+    assert s.methane_ppm == 12  # updated
+    assert s.in_chatty_mode is True  # updated
     assert s.battery_low_pre_warning is True  # unchanged
 
 
 # --- Device health: faults + end-of-life (passthrough objects) ---------------
+
 
 def test_from_shadow_parses_health_objects() -> None:
     """faults and endOfLife pass through as the objects the device sent."""
@@ -382,7 +386,7 @@ def test_merge_updates_health_objects_in_place() -> None:
     _ = s.merge({"state": {"reported": {"endOfLife": {"system": 1}}}})
 
     assert s.end_of_life == {"system": 1}  # updated
-    assert s.faults == {                    # unchanged
+    assert s.faults == {  # unchanged
         "coSensor": 0,
         "corruptNvm": 0,
         "stuckButton": 1,
@@ -390,6 +394,7 @@ def test_merge_updates_health_objects_in_place() -> None:
 
 
 # --- Device health: temperature/humidity alert status ------------------------
+
 
 def test_from_shadow_parses_alert_status() -> None:
     """Temperature/humidity alert-status codes parse off the shadow."""
@@ -413,5 +418,5 @@ def test_merge_updates_alert_status_in_place() -> None:
 
     _ = s.merge({"state": {"reported": {"humidityAlertStatus": 1}}})
 
-    assert s.humidity_alert_status == 1     # updated
+    assert s.humidity_alert_status == 1  # updated
     assert s.temperature_alert_status == 2  # unchanged

@@ -20,7 +20,13 @@ def parse_payload(raw: bytes) -> dict[str, Any]:
 
 def message_kind(topic: str, payload: dict[str, Any]) -> str:
     checks = [
-        (lambda: "state" in payload and payload.get("state", {}).get("reported") is not None, "shadow"),
+        (
+            lambda: (
+                "state" in payload
+                and payload.get("state", {}).get("reported") is not None
+            ),
+            "shadow",
+        ),
         (lambda: "connectivity" in topic.lower(), "presence"),
         (lambda: "command/response" in topic, "command"),
         (lambda: "events/" in topic, "event"),
@@ -41,7 +47,9 @@ def shadow_subscription_topic(thing_name: str) -> str:
     return f"{SHADOW_GET_PREFIX}/{thing_name}/shadow/#"
 
 
-def desired_shadow_update(thing_name: str, fields: Mapping[str, Any]) -> tuple[str, str]:
+def desired_shadow_update(
+    thing_name: str, fields: Mapping[str, Any]
+) -> tuple[str, str]:
     """Build a standard AWS IoT shadow-update message that writes ``desired`` state.
 
     This is the write side of the shadow transport these helpers already read. It

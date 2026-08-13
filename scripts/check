@@ -1,0 +1,19 @@
+#!/bin/sh
+# ABOUTME: Runs every SDK quality gate used locally and in CI.
+# ABOUTME: Stops on the first formatting, lint, type, test, or package failure.
+set -eu
+
+uv sync --locked --extra dev
+uv run ruff format --check src tests examples
+uv run ruff check src tests examples
+uv run basedpyright
+uv run pytest
+if [ -n "${SDK_DIST_DIR:-}" ]; then
+    sdk_dist_dir=$SDK_DIST_DIR
+    mkdir -p "$sdk_dist_dir"
+else
+    sdk_dist_dir=$(mktemp -d)
+    trap 'rm -rf "$sdk_dist_dir"' EXIT HUP INT TERM
+fi
+uv build --out-dir "$sdk_dist_dir"
+uv run twine check "$sdk_dist_dir"/*

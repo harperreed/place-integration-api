@@ -67,7 +67,9 @@ class PlaceDevice:
 
         return _unsubscribe
 
-    def apply_shadow(self, message: dict[str, object], *, now: float | None = None) -> bool:
+    def apply_shadow(
+        self, message: dict[str, object], *, now: float | None = None
+    ) -> bool:
         """Merge a shadow message; notify (and report True) only if state changed.
 
         Like set_online, a no-op update is silent: an empty-payload shadow message
@@ -92,7 +94,10 @@ class PlaceDevice:
         self._notify()
 
     def motion(
-        self, within_seconds: float = DEFAULT_MOTION_WINDOW_SEC, *, now: float | None = None
+        self,
+        within_seconds: float = DEFAULT_MOTION_WINDOW_SEC,
+        *,
+        now: float | None = None,
     ) -> bool:
         """Whether a motionDetected pulse arrived within the last ``within_seconds``.
 

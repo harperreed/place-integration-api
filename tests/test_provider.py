@@ -42,11 +42,11 @@ def test_provider_discover_parses_response() -> None:
     provider = Provider(auth)
     devices = asyncio.run(provider.discover())
 
-    assert auth.calls == [("POST", FULFILLMENT_URL, {"json": {"command": "DISCOVER", "data": {}}})]
+    assert auth.calls == [
+        ("POST", FULFILLMENT_URL, {"json": {"command": "DISCOVER", "data": {}}})
+    ]
 
-    thing_names = sorted(
-        {d.thing_name for d in devices if d.thing_name is not None}
-    )
+    thing_names = sorted({d.thing_name for d in devices if d.thing_name is not None})
 
     assert thing_names == ["t1", "t2"]
     assert [d.device_id for d in devices] == ["d1", "d2"]
@@ -76,7 +76,9 @@ def test_provider_enable_sends_enable_command() -> None:
     provider = Provider(auth)
     result = asyncio.run(provider.enable())
 
-    assert auth.calls == [("POST", FULFILLMENT_URL, {"json": {"command": "ENABLE", "data": {}}})]
+    assert auth.calls == [
+        ("POST", FULFILLMENT_URL, {"json": {"command": "ENABLE", "data": {}}})
+    ]
     assert result == payload
 
 
@@ -103,7 +105,9 @@ def test_provider_disable_sends_disable_command() -> None:
     provider = Provider(auth)
     result = asyncio.run(provider.disable())
 
-    assert auth.calls == [("POST", FULFILLMENT_URL, {"json": {"command": "DISABLE", "data": {}}})]
+    assert auth.calls == [
+        ("POST", FULFILLMENT_URL, {"json": {"command": "DISABLE", "data": {}}})
+    ]
     assert result == payload
 
 

@@ -124,7 +124,9 @@ def test_apply_shadow_notifies_only_on_change() -> None:
     assert dev.apply_shadow({"state": {"reported": {"coPpm": 9}}}) is True  # changed
     assert seen == [dev]
 
-    assert dev.apply_shadow({"state": {"reported": {"coPpm": 9}}}) is False  # same value
+    assert (
+        dev.apply_shadow({"state": {"reported": {"coPpm": 9}}}) is False
+    )  # same value
     assert seen == [dev]  # still only the one notification
 
 

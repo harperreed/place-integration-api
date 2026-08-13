@@ -11,7 +11,9 @@ def test_defaults_are_the_known_public_constants() -> None:
     assert cfg.iot_endpoint == "a2ksnv5v3x6m50-ats.iot.us-east-2.amazonaws.com"
     assert cfg.cognito_user_pool_id == "us-east-2_LKSPO9tT6"
     assert cfg.cognito_client_id == "5blr1qf2evvj4ivircqbpqikev"
-    assert cfg.cognito_identity_pool_id == "us-east-2:77c64042-63a1-4126-bdae-bd4150a73ad1"
+    assert (
+        cfg.cognito_identity_pool_id == "us-east-2:77c64042-63a1-4126-bdae-bd4150a73ad1"
+    )
     assert cfg.keep_alive_sec == 30
     assert cfg.url_expire_sec == 86400
 

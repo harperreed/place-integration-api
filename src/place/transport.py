@@ -67,7 +67,12 @@ def get_signed_uri(config: PlaceConfig, credentials: Credentials) -> str:
     )
     request_hash = _sha256_hex(canonical_request)
     string_to_sign = "\n".join(
-        [ALGORITHM, amz_date, f"{date_stamp}/{region}/{SERVICE}/aws4_request", request_hash]
+        [
+            ALGORITHM,
+            amz_date,
+            f"{date_stamp}/{region}/{SERVICE}/aws4_request",
+            request_hash,
+        ]
     )
     k_date = _sign(("AWS4" + secret_access_key).encode("utf-8"), date_stamp)
     k_region = _sign(k_date, region)
@@ -243,7 +248,9 @@ class PlaceConnection:
                         if self._on_state:
                             self._on_state(True)
                         try:
-                            async with asyncio.timeout(self._seconds_until_refresh(creds)):
+                            async with asyncio.timeout(
+                                self._seconds_until_refresh(creds)
+                            ):
                                 async for topic, payload in transport.messages():
                                     self._on_message(topic, payload)
                         except TimeoutError:

@@ -49,7 +49,9 @@ def test_endpoint_and_expiry_flow_from_config() -> None:
 
 
 def test_websocket_options_extracts_path_and_host_header() -> None:
-    signed = "wss://host.example/mqtt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=abc"
+    signed = (
+        "wss://host.example/mqtt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=abc"
+    )
     path, headers = websocket_options(signed, "host.example")
     assert path == "/mqtt?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=abc"
     assert headers == {"Host": "host.example"}

@@ -4,17 +4,17 @@ import binascii
 import datetime
 import hashlib
 import hmac
-import re
-
 import os
+import re
+from typing import Any, cast
 
 os.environ.setdefault("AWS_SHARED_CREDENTIALS_FILE", os.devnull)
 os.environ.setdefault("AWS_CONFIG_FILE", os.devnull)
 
 import boto3
+import six
 from botocore import UNSIGNED
 from botocore.config import Config
-import six
 
 
 class WarrantException(Exception):
@@ -115,7 +115,6 @@ def calculate_u(big_a, big_b):
 
 
 class AWSSRP(object):
-
     NEW_PASSWORD_REQUIRED_CHALLENGE = "NEW_PASSWORD_REQUIRED"
     PASSWORD_VERIFIER_CHALLENGE = "PASSWORD_VERIFIER"
 
@@ -140,8 +139,10 @@ class AWSSRP(object):
         self.pool_id = pool_id
         self.client_id = client_id
         self.client_secret = client_secret
-        self.client = (
-            client if client else boto3.client(
+        self.client: Any = (
+            client
+            if client
+            else boto3.client(
                 "cognito-idp",
                 region_name=pool_region,
                 config=Config(signature_version=UNSIGNED),
@@ -260,7 +261,7 @@ class AWSSRP(object):
         return response
 
     def authenticate_user(self, client=None):
-        boto_client = self.client or client
+        boto_client = cast(Any, self.client or client)
         auth_params = self.get_auth_params()
         response = boto_client.initiate_auth(
             AuthFlow="USER_SRP_AUTH",
@@ -287,7 +288,7 @@ class AWSSRP(object):
             )
 
     def set_new_password_challenge(self, new_password, client=None):
-        boto_client = self.client or client
+        boto_client = cast(Any, self.client or client)
         auth_params = self.get_auth_params()
         response = boto_client.initiate_auth(
             AuthFlow="USER_SRP_AUTH",

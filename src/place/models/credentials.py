@@ -12,4 +12,3 @@ class Credentials:
     identity_id: str
     access_token: str | None = None
     expiration: datetime | None = None
-

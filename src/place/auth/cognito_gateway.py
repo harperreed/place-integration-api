@@ -37,7 +37,9 @@ def _as_place_auth_error(
     except ClientError as exc:
         response = cast(dict[str, object], exc.response)
         error = response.get("Error")
-        error_details = cast(dict[str, object], error) if isinstance(error, dict) else {}
+        error_details = (
+            cast(dict[str, object], error) if isinstance(error, dict) else {}
+        )
         code = str(error_details.get("Code", "UnknownClientError"))
         if code in invalid_codes:
             translated_error = PlaceInvalidAuthError(f"{action} rejected")

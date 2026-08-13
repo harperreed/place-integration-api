@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from aiohttp import ClientSession, ClientResponse
+
+from aiohttp import ClientResponse, ClientSession
 
 
 class AbstractAuth(ABC):

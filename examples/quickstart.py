@@ -19,7 +19,8 @@ async def main() -> None:
         auth = CognitoAuth(config, session)
         try:
             await auth.authenticate(
-                str(decouple.config("PLACE_USERNAME")), str(decouple.config("PLACE_PASSWORD"))
+                str(decouple.config("PLACE_USERNAME")),
+                str(decouple.config("PLACE_PASSWORD")),
             )
         except MfaRequired as mfa:
             await auth.submit_mfa(getpass(f"MFA code ({mfa.challenge_name}): "))

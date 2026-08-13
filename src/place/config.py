@@ -70,7 +70,9 @@ class PlaceConfig:
             region=str(decouple.config("AWS_REGION", default=REGION)),
             iot_endpoint=str(decouple.config("AWS_IOT_ENDPOINT", default=IOT_ENDPOINT)),
             cognito_user_pool_id=str(
-                decouple.config("AWS_COGNITO_USER_POOL_ID", default=COGNITO_USER_POOL_ID)
+                decouple.config(
+                    "AWS_COGNITO_USER_POOL_ID", default=COGNITO_USER_POOL_ID
+                )
             ),
             cognito_client_id=str(
                 decouple.config("AWS_COGNITO_CLIENT_ID", default=COGNITO_CLIENT_ID)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
+
 from place.auth import get_iot_credentials
 
 
@@ -17,7 +18,6 @@ def test_get_iot_credentials_success(mock_boto3: MagicMock) -> None:
             "SessionToken": "session",
         }
     }
-
 
     creds = get_iot_credentials(
         id_token="id-token",

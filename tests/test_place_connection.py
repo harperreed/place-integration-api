@@ -134,9 +134,13 @@ async def test_connect_subscribes_publishes_and_dispatches() -> None:
     states: list[bool] = []
     auth = FakeAuth(_creds())
 
-    factory: TransportFactory = lambda cfg, creds: ScriptedTransport(
-        [("$aws/things/T/shadow/get/accepted", b"{}")], subs, published, conn.stop
-    )
+    def factory(cfg: PlaceConfig, creds: Credentials) -> MqttTransport:
+        _ = cfg
+        _ = creds
+        return ScriptedTransport(
+            [("$aws/things/T/shadow/get/accepted", b"{}")], subs, published, conn.stop
+        )
+
     conn = PlaceConnection(
         PlaceConfig(),
         auth,
@@ -157,10 +161,14 @@ async def test_connect_subscribes_publishes_and_dispatches() -> None:
 
 
 async def test_publish_before_connect_raises() -> None:
-    def _factory_should_not_be_called(cfg: PlaceConfig, creds: Credentials) -> MqttTransport:
+    def _factory_should_not_be_called(
+        cfg: PlaceConfig, creds: Credentials
+    ) -> MqttTransport:
         _ = cfg
         _ = creds
-        raise AssertionError("transport_factory must not be called when run() is never invoked")
+        raise AssertionError(
+            "transport_factory must not be called when run() is never invoked"
+        )
 
     conn = PlaceConnection(
         PlaceConfig(),
@@ -178,9 +186,11 @@ async def test_add_subscription_dedup_guard() -> None:
     published: list[tuple[str, bytes]] = []
     auth = FakeAuth(_creds())
 
-    factory: TransportFactory = lambda cfg, creds: ScriptedTransport(
-        [], subs, published, conn.stop
-    )
+    def factory(cfg: PlaceConfig, creds: Credentials) -> MqttTransport:
+        _ = cfg
+        _ = creds
+        return ScriptedTransport([], subs, published, conn.stop)
+
     conn = PlaceConnection(
         PlaceConfig(),
         auth,
@@ -200,9 +210,11 @@ async def test_replay_preserves_add_order() -> None:
     published: list[tuple[str, bytes]] = []
     auth = FakeAuth(_creds())
 
-    factory: TransportFactory = lambda cfg, creds: ScriptedTransport(
-        [], subs, published, conn.stop
-    )
+    def factory(cfg: PlaceConfig, creds: Credentials) -> MqttTransport:
+        _ = cfg
+        _ = creds
+        return ScriptedTransport([], subs, published, conn.stop)
+
     conn = PlaceConnection(
         PlaceConfig(),
         auth,
@@ -230,9 +242,12 @@ async def test_publish_while_connected_delegates_to_transport() -> None:
         await conn.publish("$aws/things/T/shadow/get", b"mid-stream")
 
     hook: Callable[[], Awaitable[None]] = _publish_mid_stream
-    factory: TransportFactory = lambda cfg, creds: ScriptedTransport(
-        [], subs, published, conn.stop, hook
-    )
+
+    def factory(cfg: PlaceConfig, creds: Credentials) -> MqttTransport:
+        _ = cfg
+        _ = creds
+        return ScriptedTransport([], subs, published, conn.stop, hook)
+
     conn = PlaceConnection(
         PlaceConfig(),
         auth,
@@ -293,6 +308,7 @@ class FlakyTransport:
         for _ in ():  # never runs; the empty loop makes this an async generator
             yield ("", b"")
 
+
 def _flaky_factory(
     fail_times: int,
     stop_getter: Callable[[], Callable[[], None]],
@@ -311,7 +327,10 @@ def _flaky_factory(
 
 async def test_backoff_grows_then_connects() -> None:
     slept: list[float] = []
-    sleep_fn: Callable[[float], Awaitable[None]] = lambda d: _noop_sleep(slept, d)
+
+    async def sleep_fn(delay: float) -> None:
+        await _noop_sleep(slept, delay)
+
     conn = PlaceConnection(
         PlaceConfig(reconnect_min_sec=1.0, reconnect_max_sec=60.0),
         FakeAuth(_creds()),
@@ -325,7 +344,10 @@ async def test_backoff_grows_then_connects() -> None:
 
 async def test_backoff_is_capped() -> None:
     slept: list[float] = []
-    sleep_fn: Callable[[float], Awaitable[None]] = lambda d: _noop_sleep(slept, d)
+
+    async def sleep_fn(delay: float) -> None:
+        await _noop_sleep(slept, delay)
+
     conn = PlaceConnection(
         PlaceConfig(reconnect_min_sec=1.0, reconnect_max_sec=1.5),
         FakeAuth(_creds()),
@@ -369,7 +391,10 @@ def test_seconds_until_refresh_uses_margin() -> None:
 
 async def test_each_connect_fetches_fresh_credentials() -> None:
     auth = FakeAuth(_creds())
-    sleep_fn: Callable[[float], Awaitable[None]] = lambda d: _noop_sleep([], d)
+
+    async def sleep_fn(delay: float) -> None:
+        await _noop_sleep([], delay)
+
     conn = PlaceConnection(
         PlaceConfig(reconnect_min_sec=0.0, reconnect_max_sec=0.0),
         auth,
@@ -437,7 +462,9 @@ class HangingTransport:
         return None
 
     async def messages(self) -> AsyncIterator[tuple[str, bytes]]:
-        await asyncio.sleep(1)  # cancelled ~instantly by the refresh deadline when wired
+        await asyncio.sleep(
+            1
+        )  # cancelled ~instantly by the refresh deadline when wired
         self._stop()  # fallback: a regressed (un-wrapped) pump still ends the loop
         for _ in ():  # never runs; makes this an async generator
             yield ("", b"")
@@ -447,9 +474,14 @@ async def test_refresh_deadline_triggers_proactive_reconnect() -> None:
     subs: list[str] = []
     published: list[tuple[str, bytes]] = []
     slept: list[float] = []
-    sleep_fn: Callable[[float], Awaitable[None]] = lambda d: _noop_sleep(slept, d)
+
+    async def sleep_fn(delay: float) -> None:
+        await _noop_sleep(slept, delay)
+
     past = datetime.now(timezone.utc) - timedelta(seconds=10)
-    auth = ExpiringAuth([past, None])  # cycle 1: immediate deadline; cycle 2: no deadline
+    auth = ExpiringAuth(
+        [past, None]
+    )  # cycle 1: immediate deadline; cycle 2: no deadline
     state = {"n": 0}
 
     def factory(cfg: PlaceConfig, creds: Credentials) -> MqttTransport:
@@ -471,7 +503,9 @@ async def test_refresh_deadline_triggers_proactive_reconnect() -> None:
     await conn.run()
 
     assert auth.calls == 2  # the pump cycled once — a second connect happened
-    assert slept == []  # no backoff sleep: the cycle came from the timeout, not MqttError
+    assert (
+        slept == []
+    )  # no backoff sleep: the cycle came from the timeout, not MqttError
 
 
 async def test_credential_failure_backs_off_and_retries(
@@ -480,12 +514,17 @@ async def test_credential_failure_backs_off_and_retries(
     subs: list[str] = []
     published: list[tuple[str, bytes]] = []
     slept: list[float] = []
-    sleep_fn: Callable[[float], Awaitable[None]] = lambda d: _noop_sleep(slept, d)
+
+    async def sleep_fn(delay: float) -> None:
+        await _noop_sleep(slept, delay)
+
     auth = FlakyAuth(1)  # first credential fetch fails, second succeeds
 
-    factory: TransportFactory = lambda cfg, creds: ScriptedTransport(
-        [], subs, published, conn.stop
-    )
+    def factory(cfg: PlaceConfig, creds: Credentials) -> MqttTransport:
+        _ = cfg
+        _ = creds
+        return ScriptedTransport([], subs, published, conn.stop)
+
     conn = PlaceConnection(
         PlaceConfig(reconnect_min_sec=1.0, reconnect_max_sec=60.0),
         auth,
@@ -534,9 +573,11 @@ async def test_transient_auth_notifies_and_retries() -> None:
     slept: list[float] = []
     subs: list[str] = []
     published: list[tuple[str, bytes]] = []
-    factory: TransportFactory = lambda cfg, creds: ScriptedTransport(
-        [], subs, published, conn.stop
-    )
+
+    def factory(cfg: PlaceConfig, creds: Credentials) -> MqttTransport:
+        _ = cfg
+        _ = creds
+        return ScriptedTransport([], subs, published, conn.stop)
 
     conn = PlaceConnection(
         PlaceConfig(reconnect_min_sec=1.0, reconnect_max_sec=60.0),
@@ -615,9 +656,12 @@ async def test_non_auth_place_error_notifies_and_retries() -> None:
     slept: list[float] = []
     subs: list[str] = []
     published: list[tuple[str, bytes]] = []
-    factory: TransportFactory = lambda cfg, creds: ScriptedTransport(
-        [], subs, published, conn.stop
-    )
+
+    def factory(cfg: PlaceConfig, creds: Credentials) -> MqttTransport:
+        _ = cfg
+        _ = creds
+        return ScriptedTransport([], subs, published, conn.stop)
+
     conn = PlaceConnection(
         PlaceConfig(reconnect_min_sec=1.0, reconnect_max_sec=60.0),
         auth,
@@ -647,9 +691,12 @@ async def test_error_callback_failure_does_not_stop_reconnect_or_leak_message(
         raise RuntimeError(canary)
 
     auth = ScriptedAuth([PlaceTransientAuthError("temporary")])
-    factory: TransportFactory = lambda cfg, creds: ScriptedTransport(
-        [], subs, published, conn.stop
-    )
+
+    def factory(cfg: PlaceConfig, creds: Credentials) -> MqttTransport:
+        _ = cfg
+        _ = creds
+        return ScriptedTransport([], subs, published, conn.stop)
+
     conn = PlaceConnection(
         PlaceConfig(reconnect_min_sec=1.0, reconnect_max_sec=60.0),
         auth,
@@ -674,7 +721,9 @@ async def test_error_callback_failure_does_not_stop_reconnect_or_leak_message(
         PlaceConnectionError("stopped SDK failure"),
     ],
 )
-async def test_stopped_auth_failure_does_not_notify_or_backoff(error: PlaceError) -> None:
+async def test_stopped_auth_failure_does_not_notify_or_backoff(
+    error: PlaceError,
+) -> None:
     seen: list[PlaceError] = []
     slept: list[float] = []
     conn = PlaceConnection(

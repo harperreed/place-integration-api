@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,13 +8,13 @@ version = "0.3.0"
 description = "Python APIs for Cognito-authenticated MQTT flows and Home Assistant discovery for Gentex Place."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
 authors = [
   { name="Nicholas Aelick", email="niaexa@syntronic.com" },
   { name="Andrew Tran", email="andrew.tran@gentex.com" },
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 dependencies = [
@@ -29,8 +29,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
   "basedpyright",
+  "build==1.5.0",
   "pytest",
   "pytest-asyncio",
+  "ruff==0.16.2",
+  "twine==7.0.0",
 ]
 
 [project.urls]
@@ -39,6 +42,15 @@ Homepage = "https://pypi.org/project/place-integration-api/"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+pythonpath = ["."]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.basedpyright]
+include = ["src/place"]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
 
 [tool.setuptools.packages.find]
 where = ["src"]

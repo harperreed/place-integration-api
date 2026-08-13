@@ -17,6 +17,7 @@ else:
         """Backport the type-checking-only override marker for Python 3.11."""
         return method
 
+
 from place.auth.cognito_auth import CognitoAuth
 from place.client import PlaceClient
 from place.config import PlaceConfig
@@ -79,7 +80,9 @@ class FakeConnection:
 
 
 def _discover(thing: str) -> DiscoverDevice:
-    return DiscoverDevice.from_dict({"thingName": thing, "deviceId": "dev-1", "shadow": {}})
+    return DiscoverDevice.from_dict(
+        {"thingName": thing, "deviceId": "dev-1", "shadow": {}}
+    )
 
 
 async def test_async_discover_returns_devices_without_starting_connection() -> None:

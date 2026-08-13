@@ -6,10 +6,14 @@ import boto3
 from botocore import UNSIGNED
 from botocore.config import Config
 
-
-from .aws_srp import AWSSRP
-from ..config import REGION, COGNITO_CLIENT_ID, COGNITO_USER_POOL_ID, COGNITO_IDENTITY_POOL_ID
+from ..config import (
+    COGNITO_CLIENT_ID,
+    COGNITO_IDENTITY_POOL_ID,
+    COGNITO_USER_POOL_ID,
+    REGION,
+)
 from ..models import Credentials
+from .aws_srp import AWSSRP
 
 
 def login(username: str, password: str) -> Dict[str, Any]:
@@ -19,6 +23,7 @@ def login(username: str, password: str) -> Dict[str, Any]:
         username=username,
         password=password,
     )
+
 
 def get_iot_credentials(
     id_token: str,
@@ -38,9 +43,9 @@ def get_iot_credentials(
     provider_key = f"cognito-idp.{region}.amazonaws.com/{user_pool_id}"
     logins = {provider_key: id_token}
 
-    identity_id = identity.get_id(
-        IdentityPoolId=identity_pool_id, Logins=logins
-    )["IdentityId"]
+    identity_id = identity.get_id(IdentityPoolId=identity_pool_id, Logins=logins)[
+        "IdentityId"
+    ]
 
     creds = identity.get_credentials_for_identity(
         IdentityId=identity_id, Logins=logins
@@ -109,11 +114,12 @@ def respond_mfa(
     client = cognito_idp_client or boto3.client(
         "cognito-idp", region_name=region, config=Config(signature_version=UNSIGNED)
     )
-    code_key = "SMS_MFA_CODE" if challenge_name == "SMS_MFA" else "SOFTWARE_TOKEN_MFA_CODE"
+    code_key = (
+        "SMS_MFA_CODE" if challenge_name == "SMS_MFA" else "SOFTWARE_TOKEN_MFA_CODE"
+    )
     return client.respond_to_auth_challenge(
         ClientId=client_id,
         ChallengeName=challenge_name,
         Session=session,
         ChallengeResponses={"USERNAME": username, code_key: code},
     )
-

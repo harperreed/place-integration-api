@@ -87,7 +87,9 @@ def test_refresh_tokens_uses_refresh_token_auth_flow() -> None:
     assert kwargs["AuthFlow"] == "REFRESH_TOKEN_AUTH"
     assert kwargs["AuthParameters"] == {"REFRESH_TOKEN": "refresh-abc"}
     assert kwargs["ClientId"] == "cid"
-    assert "SECRET_HASH" not in kwargs["AuthParameters"]  # this app client has no secret
+    assert (
+        "SECRET_HASH" not in kwargs["AuthParameters"]
+    )  # this app client has no secret
 
 
 def test_respond_mfa_uses_software_token_code_key() -> None:
@@ -125,10 +127,18 @@ def test_real_gateway_passes_config_fields_to_srp_auth(
 
         return _fn
 
-    monkeypatch.setattr(cognito_gateway.srp_auth, "get_tokens_via_srp", _record("srp_login", {"ok": 1}))
-    monkeypatch.setattr(cognito_gateway.srp_auth, "refresh_tokens", _record("refresh", {"ok": 2}))
-    monkeypatch.setattr(cognito_gateway.srp_auth, "respond_mfa", _record("mfa", {"ok": 3}))
-    monkeypatch.setattr(cognito_gateway.srp_auth, "get_iot_credentials", _record("iot", "CREDS"))
+    monkeypatch.setattr(
+        cognito_gateway.srp_auth, "get_tokens_via_srp", _record("srp_login", {"ok": 1})
+    )
+    monkeypatch.setattr(
+        cognito_gateway.srp_auth, "refresh_tokens", _record("refresh", {"ok": 2})
+    )
+    monkeypatch.setattr(
+        cognito_gateway.srp_auth, "respond_mfa", _record("mfa", {"ok": 3})
+    )
+    monkeypatch.setattr(
+        cognito_gateway.srp_auth, "get_iot_credentials", _record("iot", "CREDS")
+    )
 
     config = PlaceConfig(
         region="R-test",
@@ -372,7 +382,9 @@ def test_iot_not_authorized_remains_retryable_plain_auth_error(
         _ = gateway.iot_credentials("ID-TOKEN-CANARY", "ACCESS-TOKEN-CANARY")
 
     assert type(caught.value) is PlaceAuthError
-    assert str(caught.value) == "iot credential exchange failed (NotAuthorizedException)"
+    assert (
+        str(caught.value) == "iot credential exchange failed (NotAuthorizedException)"
+    )
     assert "TOKEN-CANARY" not in str(caught.value)
 
 
