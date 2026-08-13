@@ -106,8 +106,12 @@ class PlaceClient:
     def devices(self) -> dict[str, PlaceDevice]:
         return dict(self._devices)
 
+    async def async_discover(self) -> list[DiscoverDevice]:
+        """Return devices visible to the authenticated account without starting MQTT."""
+        return await self._provider.discover()
+
     async def start(self) -> None:
-        discovered = await self._provider.discover()
+        discovered = await self.async_discover()
         # Any explicitly configured households first, then one derived from each
         # device's thing name (the household subscription is what delivers live
         # motion events). dict.fromkeys dedupes while preserving order — devices

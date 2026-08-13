@@ -22,8 +22,10 @@ from place.models import DeviceEvent, DiscoverDevice
 class FakeProvider:
     def __init__(self, devices: list[DiscoverDevice]) -> None:
         self._devices: list[DiscoverDevice] = devices
+        self.discover_calls: int = 0
 
     async def discover(self) -> list[DiscoverDevice]:
+        self.discover_calls += 1
         return self._devices
 
 
@@ -38,6 +40,7 @@ class FakeConnection:
         self.subscriptions: list[str] = []
         self.connect_publishes: list[tuple[str, bytes]] = []
         self.published: list[tuple[str, bytes]] = []
+        self.run_calls: int = 0
         self.started: bool = False
         self.stopped: bool = False
         self._gate: asyncio.Event = asyncio.Event()
@@ -52,6 +55,7 @@ class FakeConnection:
         self.published.append((topic, payload))
 
     async def run(self) -> None:
+        self.run_calls += 1
         self.started = True
         _ = await self._gate.wait()
 
@@ -62,6 +66,33 @@ class FakeConnection:
 
 def _discover(thing: str) -> DiscoverDevice:
     return DiscoverDevice.from_dict({"thingName": thing, "deviceId": "dev-1", "shadow": {}})
+
+
+async def test_async_discover_returns_devices_without_starting_connection() -> None:
+    discovered = [_discover("thing-a")]
+    provider = FakeProvider(discovered)
+    created: list[FakeConnection] = []
+
+    def connection_factory(
+        on_message: Callable[[str, bytes], None],
+        on_state: Callable[[bool], None],
+    ) -> FakeConnection:
+        connection = FakeConnection(on_message, on_state)
+        created.append(connection)
+        return connection
+
+    client = PlaceClient(
+        PlaceConfig(),
+        auth=cast(CognitoAuth, object()),
+        provider=provider,
+        connection_factory=connection_factory,
+    )
+
+    result = await client.async_discover()
+
+    assert result == discovered
+    assert provider.discover_calls == 1
+    assert created[0].run_calls == 0
 
 
 async def test_start_discovers_wires_subscriptions_and_launches() -> None:
