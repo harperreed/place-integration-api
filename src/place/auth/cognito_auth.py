@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -60,7 +61,6 @@ class CognitoAuth(AbstractAuth):
 
     async def authenticate_from_cache(self, username: str) -> None:
         """Authenticate with the configured refresh-token cache and never use SRP."""
-        self._username = username
         if self._token_cache is None:
             raise PlaceInvalidAuthError("no refresh-token cache configured")
 
@@ -74,14 +74,18 @@ class CognitoAuth(AbstractAuth):
         if cache_failed:
             raise PlaceTransientAuthError("refresh-token cache unavailable") from None
 
-        if not cached or cached.get("username") != username:
-            raise PlaceInvalidAuthError("no refresh token for username")
-        refresh_token = cached.get("refresh_token")
-        if not isinstance(refresh_token, str) or not refresh_token:
+        refresh_token = self._parse_cached_refresh_token(cached, username)
+        if refresh_token is None:
             raise PlaceInvalidAuthError("no refresh token for username")
 
-        auth = await asyncio.to_thread(self._gateway.refresh, refresh_token)
+        auth = dict(await asyncio.to_thread(self._gateway.refresh, refresh_token))
         auth.setdefault("RefreshToken", refresh_token)
+        if self._username != username:
+            self._mfa_challenge = None
+            self._mfa_session = None
+            self._iot_creds = None
+            self._iot_creds_expiry = None
+        self._username = username
         self._store_tokens(auth)
 
     async def _try_cached_login(self, username: str) -> bool:
@@ -98,10 +102,8 @@ class CognitoAuth(AbstractAuth):
         except Exception:  # a broken cache must never block a real login
             logger.warning("token cache load failed; falling back to SRP login")
             return False
-        if not cached or cached.get("username") != username:
-            return False
-        refresh_token = cached.get("refresh_token")
-        if not refresh_token:
+        refresh_token = self._parse_cached_refresh_token(cached, username)
+        if refresh_token is None:
             return False
         try:
             auth = await asyncio.to_thread(self._gateway.refresh, refresh_token)
@@ -113,6 +115,18 @@ class CognitoAuth(AbstractAuth):
         auth.setdefault("RefreshToken", refresh_token)
         self._store_tokens(auth)
         return True
+
+    @staticmethod
+    def _parse_cached_refresh_token(
+        cached: Mapping[str, object] | None, username: str
+    ) -> str | None:
+        """Return a non-empty refresh token only for the requested account."""
+        if not cached or cached.get("username") != username:
+            return None
+        refresh_token = cached.get("refresh_token")
+        if not isinstance(refresh_token, str) or not refresh_token:
+            return None
+        return refresh_token
 
     async def submit_mfa(self, code: str) -> None:
         if self._mfa_challenge is None or self._mfa_session is None:

@@ -34,13 +34,17 @@ class FakeGateway:
         self.login_calls = 0
         self.refresh_calls = 0
         self.iot_calls = 0
+        self.login_args: list[tuple[str, str]] = []
+        self.refresh_args: list[str] = []
 
     def srp_login(self, username: str, password: str) -> dict[str, Any]:
         self.login_calls += 1
+        self.login_args.append((username, password))
         return self._login
 
     def refresh(self, refresh_token: str) -> dict[str, Any]:
         self.refresh_calls += 1
+        self.refresh_args.append(refresh_token)
         if self._refresh_error is not None:
             raise self._refresh_error
         return self._refresh
@@ -285,7 +289,62 @@ async def test_authenticate_from_cache_uses_refresh_token_without_srp() -> None:
     assert await auth.async_get_access_token() == "access-cached"
     assert auth._refresh_token == "rt-cached"  # pyright: ignore[reportPrivateUsage]
     assert gw.refresh_calls == 1
+    assert gw.refresh_args == ["rt-cached"]
     assert gw.login_calls == 0
+
+
+async def test_authenticate_from_cache_failure_preserves_existing_account_state() -> None:
+    far = datetime.now(timezone.utc) + timedelta(hours=5)
+    gw = FakeGateway(
+        login={"AuthenticationResult": _auth_result(RefreshToken="rt-old")},
+        creds=_creds(far),
+    )
+    cache = FakeCache()
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw, token_cache=cache)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("old-account", "old-password")
+    await auth.async_get_iot_credentials()
+    vars(auth)["_mfa_challenge"] = "SOFTWARE_TOKEN_MFA"
+    vars(auth)["_mfa_session"] = "old-mfa-session"
+    cache.data = {"username": "new-account", "refresh_token": "rt-new"}
+    gw._refresh_error = PlaceTransientAuthError("refresh temporarily unavailable")
+    old_state = vars(auth).copy()
+
+    with pytest.raises(PlaceTransientAuthError):
+        await auth.authenticate_from_cache("new-account")
+
+    assert vars(auth) == old_state
+
+
+async def test_authenticate_from_cache_switches_account_bound_state() -> None:
+    far = datetime.now(timezone.utc) + timedelta(hours=5)
+    gw = FakeGateway(
+        login={"AuthenticationResult": _auth_result(RefreshToken="rt-old")},
+        creds=_creds(far),
+    )
+    cache = FakeCache()
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw, token_cache=cache)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("old-account", "old-password")
+    await auth.async_get_iot_credentials()
+    vars(auth)["_mfa_challenge"] = "SOFTWARE_TOKEN_MFA"
+    vars(auth)["_mfa_session"] = "old-mfa-session"
+    cache.data = {"username": "new-account", "refresh_token": "rt-new"}
+    gw._refresh = {
+        "AccessToken": "access-new",
+        "IdToken": "id-new",
+        "ExpiresIn": 3600,
+    }
+
+    await auth.authenticate_from_cache("new-account")
+
+    state = vars(auth)
+    assert state["_username"] == "new-account"
+    assert state["_access_token"] == "access-new"
+    assert state["_id_token"] == "id-new"
+    assert state["_refresh_token"] == "rt-new"
+    assert state["_iot_creds"] is None
+    assert state["_iot_creds_expiry"] is None
+    assert state["_mfa_challenge"] is None
+    assert state["_mfa_session"] is None
 
 
 @pytest.mark.parametrize(
@@ -437,6 +496,24 @@ async def test_authenticate_propagates_transient_cached_refresh_without_srp() ->
     assert caught.value is error
     assert gw.refresh_calls == 1
     assert gw.login_calls == 0
+
+
+@pytest.mark.parametrize("refresh_token", ["", 123])
+async def test_authenticate_uses_srp_for_malformed_cached_refresh_token(
+    refresh_token: object,
+) -> None:
+    gw = FakeGateway(
+        login={"AuthenticationResult": _auth_result(AccessToken="access-srp")},
+    )
+    cache = FakeCache({"username": "alice", "refresh_token": refresh_token})
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw, token_cache=cache)  # pyright: ignore[reportArgumentType]
+
+    await auth.authenticate("alice", "supplied-password")
+
+    assert gw.refresh_calls == 0
+    assert gw.login_calls == 1
+    assert gw.login_args == [("alice", "supplied-password")]
+    assert await auth.async_get_access_token() == "access-srp"
 
 
 async def test_authenticate_persists_refresh_token_after_srp_login() -> None:
