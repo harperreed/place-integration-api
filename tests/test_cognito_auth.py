@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -557,6 +558,228 @@ async def test_authenticate_propagates_transient_cached_refresh_without_srp() ->
     assert caught.value is error
     assert gw.refresh_calls == 1
     assert gw.login_calls == 0
+
+
+async def test_authenticate_cached_account_switch_commits_all_bound_state() -> None:
+    far = datetime.now(timezone.utc) + timedelta(hours=5)
+    gw = FakeGateway(
+        login={"AuthenticationResult": _auth_result(RefreshToken="rt-old")},
+        creds=_creds(far),
+    )
+    cache = FakeCache()
+    auth = CognitoAuth(
+        PlaceConfig(), websession=object(), gateway=gw, token_cache=cache
+    )  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("old-account", "old-password")
+    await auth.async_get_iot_credentials()
+    auth._mfa_challenge = "SOFTWARE_TOKEN_MFA"  # pyright: ignore[reportPrivateUsage]
+    auth._mfa_session = "old-session"  # pyright: ignore[reportPrivateUsage]
+    cache.data = {"username": "new-account", "refresh_token": "rt-new"}
+    gw._refresh = {
+        "AccessToken": "access-new",
+        "IdToken": "id-new",
+        "ExpiresIn": 3600,
+    }
+
+    await auth.authenticate("new-account", "new-password")
+
+    assert auth._username == "new-account"  # pyright: ignore[reportPrivateUsage]
+    assert auth._access_token == "access-new"  # pyright: ignore[reportPrivateUsage]
+    assert auth._id_token == "id-new"  # pyright: ignore[reportPrivateUsage]
+    assert auth._refresh_token == "rt-new"  # pyright: ignore[reportPrivateUsage]
+    assert auth._iot_creds is None  # pyright: ignore[reportPrivateUsage]
+    assert auth._iot_creds_expiry is None  # pyright: ignore[reportPrivateUsage]
+    assert auth._mfa_challenge is None  # pyright: ignore[reportPrivateUsage]
+    assert auth._mfa_session is None  # pyright: ignore[reportPrivateUsage]
+    assert gw.login_calls == 1
+
+
+async def test_authenticate_transient_cached_switch_preserves_all_state() -> None:
+    far = datetime.now(timezone.utc) + timedelta(hours=5)
+    gw = FakeGateway(
+        login={"AuthenticationResult": _auth_result(RefreshToken="rt-old")},
+        creds=_creds(far),
+    )
+    cache = FakeCache()
+    auth = CognitoAuth(
+        PlaceConfig(), websession=object(), gateway=gw, token_cache=cache
+    )  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("old-account", "old-password")
+    await auth.async_get_iot_credentials()
+    auth._mfa_challenge = "SOFTWARE_TOKEN_MFA"  # pyright: ignore[reportPrivateUsage]
+    auth._mfa_session = "old-session"  # pyright: ignore[reportPrivateUsage]
+    cache.data = {"username": "new-account", "refresh_token": "rt-new"}
+    gw._refresh_error = PlaceTransientAuthError("temporary")
+    old_state = vars(auth).copy()
+
+    with pytest.raises(PlaceTransientAuthError):
+        await auth.authenticate("new-account", "new-password")
+
+    assert vars(auth) == old_state
+    assert gw.login_calls == 1
+
+
+async def test_authenticate_invalid_cache_then_srp_switches_all_bound_state() -> None:
+    far = datetime.now(timezone.utc) + timedelta(hours=5)
+    gw = FakeGateway(
+        login={"AuthenticationResult": _auth_result(RefreshToken="rt-old")},
+        creds=_creds(far),
+    )
+    cache = FakeCache()
+    auth = CognitoAuth(
+        PlaceConfig(), websession=object(), gateway=gw, token_cache=cache
+    )  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("old-account", "old-password")
+    await auth.async_get_iot_credentials()
+    auth._mfa_challenge = "SOFTWARE_TOKEN_MFA"  # pyright: ignore[reportPrivateUsage]
+    auth._mfa_session = "old-session"  # pyright: ignore[reportPrivateUsage]
+    cache.data = {"username": "new-account", "refresh_token": "rt-stale"}
+    gw._refresh_error = PlaceInvalidAuthError("rejected")
+    gw._login = {
+        "AuthenticationResult": _auth_result(
+            AccessToken="access-new", IdToken="id-new", RefreshToken="rt-new"
+        )
+    }
+
+    await auth.authenticate("new-account", "new-password")
+
+    assert auth._username == "new-account"  # pyright: ignore[reportPrivateUsage]
+    assert auth._access_token == "access-new"  # pyright: ignore[reportPrivateUsage]
+    assert auth._id_token == "id-new"  # pyright: ignore[reportPrivateUsage]
+    assert auth._refresh_token == "rt-new"  # pyright: ignore[reportPrivateUsage]
+    assert auth._iot_creds is None  # pyright: ignore[reportPrivateUsage]
+    assert auth._mfa_challenge is None  # pyright: ignore[reportPrivateUsage]
+    assert gw.login_calls == 2
+
+
+async def test_malformed_srp_result_does_not_partially_switch_account() -> None:
+    gw = FakeGateway(
+        login={"AuthenticationResult": _auth_result(RefreshToken="rt-old")},
+        creds=_creds(datetime.now(timezone.utc) + timedelta(hours=5)),
+    )
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("old-account", "old-password")
+    await auth.async_get_iot_credentials()
+    old_state = vars(auth).copy()
+    gw._login = {"AuthenticationResult": {"AccessToken": "incomplete-new-token"}}
+
+    with pytest.raises(KeyError):
+        await auth.authenticate("new-account", "new-password")
+
+    assert vars(auth) == old_state
+
+
+async def test_new_account_mfa_replaces_old_account_with_pending_state() -> None:
+    gw = FakeGateway(
+        login={"AuthenticationResult": _auth_result(RefreshToken="rt-old")},
+        creds=_creds(datetime.now(timezone.utc) + timedelta(hours=5)),
+    )
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("old-account", "old-password")
+    await auth.async_get_iot_credentials()
+    gw._login = {"ChallengeName": "SOFTWARE_TOKEN_MFA", "Session": "new-session"}
+
+    with pytest.raises(MfaRequired) as caught:
+        await auth.authenticate("new-account", "new-password")
+
+    assert caught.value.username == "new-account"
+    assert auth._username == "new-account"  # pyright: ignore[reportPrivateUsage]
+    assert auth._access_token is None  # pyright: ignore[reportPrivateUsage]
+    assert auth._id_token is None  # pyright: ignore[reportPrivateUsage]
+    assert auth._refresh_token is None  # pyright: ignore[reportPrivateUsage]
+    assert auth._iot_creds is None  # pyright: ignore[reportPrivateUsage]
+    assert auth._iot_creds_expiry is None  # pyright: ignore[reportPrivateUsage]
+    assert auth._mfa_challenge == "SOFTWARE_TOKEN_MFA"  # pyright: ignore[reportPrivateUsage]
+    assert auth._mfa_session == "new-session"  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(PlaceAuthError, match="not authenticated"):
+        await auth.async_get_access_token()
+    with pytest.raises(PlaceAuthError, match="not authenticated"):
+        await auth.async_get_iot_credentials()
+
+
+class BlockingCredentialGateway(FakeGateway):
+    """Block one old-principal exchange while a replacement login commits."""
+
+    def __init__(self) -> None:
+        super().__init__(login={"AuthenticationResult": _auth_result()})
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def iot_credentials(self, id_token: str, access_token: str) -> Credentials:
+        self.iot_calls += 1
+        if id_token == "id-1":
+            self.started.set()
+            assert self.release.wait(timeout=5)
+        return Credentials(
+            access_key_id=f"key-{id_token}",
+            secret_access_key="secret",
+            session_token="session",
+            identity_id=f"identity-{id_token}",
+            expiration=datetime.now(timezone.utc) + timedelta(hours=5),
+        )
+
+
+async def test_old_iot_result_cannot_populate_after_account_switch() -> None:
+    gw = BlockingCredentialGateway()
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("old-account", "old-password")
+
+    credential_task = asyncio.create_task(auth.async_get_iot_credentials())
+    assert await asyncio.to_thread(gw.started.wait, 5)
+    gw._login = {
+        "AuthenticationResult": _auth_result(
+            AccessToken="access-new", IdToken="id-new", RefreshToken="refresh-new"
+        )
+    }
+    await auth.authenticate("new-account", "new-password")
+    gw.release.set()
+
+    credentials = await credential_task
+
+    assert credentials.identity_id == "identity-id-new"
+    assert auth._iot_creds is credentials  # pyright: ignore[reportPrivateUsage]
+    assert gw.iot_calls == 2
+
+
+class BlockingRefreshGateway(FakeGateway):
+    """Block an old-principal refresh while a replacement login commits."""
+
+    def __init__(self) -> None:
+        super().__init__(login={"AuthenticationResult": _auth_result()})
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def refresh(self, refresh_token: str) -> dict[str, Any]:
+        self.refresh_calls += 1
+        self.refresh_args.append(refresh_token)
+        self.started.set()
+        assert self.release.wait(timeout=5)
+        return {
+            "AccessToken": "access-refreshed-old",
+            "IdToken": "id-refreshed-old",
+            "ExpiresIn": 3600,
+        }
+
+
+async def test_old_refresh_result_cannot_overwrite_account_switch() -> None:
+    gw = BlockingRefreshGateway()
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("old-account", "old-password")
+    auth._access_token_expiry = 0.0  # pyright: ignore[reportPrivateUsage]
+
+    refresh_task = asyncio.create_task(auth.async_get_access_token())
+    assert await asyncio.to_thread(gw.started.wait, 5)
+    gw._login = {
+        "AuthenticationResult": _auth_result(
+            AccessToken="access-new", IdToken="id-new", RefreshToken="refresh-new"
+        )
+    }
+    await auth.authenticate("new-account", "new-password")
+    gw.release.set()
+
+    assert await refresh_task == "access-new"
+    assert auth._access_token == "access-new"  # pyright: ignore[reportPrivateUsage]
+    assert auth._id_token == "id-new"  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.parametrize("refresh_token", ["", 123])

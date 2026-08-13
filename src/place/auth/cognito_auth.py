@@ -47,20 +47,24 @@ class CognitoAuth(AbstractAuth):
         self._access_token_expiry: float = 0.0
         self._mfa_challenge: str | None = None
         self._mfa_session: str | None = None
+        self._principal_generation: int = 0
         self._refresh_lock: asyncio.Lock = asyncio.Lock()
         self._iot_creds: Credentials | None = None
         self._iot_creds_expiry: datetime | None = None
         self._iot_lock: asyncio.Lock = asyncio.Lock()
 
     async def authenticate(self, username: str, password: str) -> None:
-        self._username = username
-        if await self._try_cached_login(username):
+        generation = self._principal_generation
+        cached_auth = await self._try_cached_login(username)
+        if cached_auth is not None:
+            self._commit_authenticated(username, cached_auth, generation)
             return
         result = await asyncio.to_thread(self._gateway.srp_login, username, password)
-        self._consume_auth_response(result)
+        self._commit_auth_response(username, result, generation)
 
     async def authenticate_from_cache(self, username: str) -> None:
         """Authenticate with the configured refresh-token cache and never use SRP."""
+        generation = self._principal_generation
         if self._token_cache is None:
             raise PlaceInvalidAuthError("no refresh-token cache configured")
 
@@ -80,41 +84,34 @@ class CognitoAuth(AbstractAuth):
 
         auth = dict(await asyncio.to_thread(self._gateway.refresh, refresh_token))
         auth.setdefault("RefreshToken", refresh_token)
-        if self._username != username:
-            self._iot_creds = None
-            self._iot_creds_expiry = None
-        self._mfa_challenge = None
-        self._mfa_session = None
-        self._username = username
-        self._store_tokens(auth)
+        self._commit_authenticated(username, auth, generation)
 
-    async def _try_cached_login(self, username: str) -> bool:
+    async def _try_cached_login(self, username: str) -> dict[str, Any] | None:
         """Mint tokens from a cached refresh token, skipping SRP+MFA.
 
-        Returns True only when a cached refresh token for this exact username minted a
+        Returns tokens only when a cached refresh token for this exact username minted a
         fresh access token. Any miss — no cache, wrong user, empty or rejected token, or a
-        misbehaving cache — returns False so authenticate() falls back to SRP login.
+        misbehaving cache — returns None so authenticate() falls back to SRP login.
         """
         if self._token_cache is None:
-            return False
+            return None
         try:
             cached = self._token_cache.load()
         except Exception:  # a broken cache must never block a real login
             logger.warning("token cache load failed; falling back to SRP login")
-            return False
+            return None
         refresh_token = self._parse_cached_refresh_token(cached, username)
         if refresh_token is None:
-            return False
+            return None
         try:
-            auth = await asyncio.to_thread(self._gateway.refresh, refresh_token)
+            auth = dict(await asyncio.to_thread(self._gateway.refresh, refresh_token))
         except PlaceInvalidAuthError:
             logger.info("cached refresh token rejected; falling back to SRP login")
-            return False
+            return None
         # REFRESH_TOKEN_AUTH omits the refresh token; thread the cached one back in so the
         # in-memory session keeps it and re-persists it below.
         auth.setdefault("RefreshToken", refresh_token)
-        self._store_tokens(auth)
-        return True
+        return auth
 
     @staticmethod
     def _parse_cached_refresh_token(
@@ -131,69 +128,130 @@ class CognitoAuth(AbstractAuth):
     async def submit_mfa(self, code: str) -> None:
         if self._mfa_challenge is None or self._mfa_session is None:
             raise PlaceAuthError("no MFA challenge pending")
+        generation = self._principal_generation
+        username = self._username or ""
         result = await asyncio.to_thread(
             self._gateway.respond_mfa,
             challenge_name=self._mfa_challenge,
             session=self._mfa_session,
-            username=self._username or "",
+            username=username,
             code=code,
         )
-        self._consume_auth_response(result)
+        self._commit_auth_response(username, result, generation)
 
     async def async_get_access_token(self) -> str:
         async with self._refresh_lock:
-            if self._access_token is not None and time.time() < (
-                self._access_token_expiry - self._config.token_refresh_margin_sec
-            ):
+            while True:
+                if self._access_token is not None and time.time() < (
+                    self._access_token_expiry - self._config.token_refresh_margin_sec
+                ):
+                    return self._access_token
+                if self._refresh_token is None:
+                    if self._access_token is None:
+                        raise PlaceAuthError(
+                            "not authenticated; call authenticate() first"
+                        )
+                    return self._access_token
+                generation = self._principal_generation
+                refresh_token = self._refresh_token
+                auth = dict(
+                    await asyncio.to_thread(self._gateway.refresh, refresh_token)
+                )
+                if generation != self._principal_generation:
+                    continue
+                self._install_tokens(auth)
+                assert self._access_token is not None
                 return self._access_token
-            if self._refresh_token is None:
-                if self._access_token is None:
-                    raise PlaceAuthError("not authenticated; call authenticate() first")
-                return self._access_token
-            auth = await asyncio.to_thread(self._gateway.refresh, self._refresh_token)
-            self._store_tokens(auth)
-            assert self._access_token is not None
-            return self._access_token
 
     async def async_get_iot_credentials(self) -> Credentials:
         async with self._iot_lock:
-            if self._iot_creds is not None and self._iot_creds_expiry is not None:
-                margin = timedelta(seconds=self._config.creds_refresh_margin_sec)
-                if datetime.now(timezone.utc) < self._iot_creds_expiry - margin:
-                    return self._iot_creds
-            access_token = await self.async_get_access_token()
-            assert self._id_token is not None
-            creds = await asyncio.to_thread(
-                self._gateway.iot_credentials, self._id_token, access_token
-            )
-            self._iot_creds = creds
-            self._iot_creds_expiry = creds.expiration or (
-                datetime.now(timezone.utc)
-                + timedelta(seconds=self._config.url_expire_sec)
-            )
-            return creds
+            while True:
+                if self._iot_creds is not None and self._iot_creds_expiry is not None:
+                    margin = timedelta(seconds=self._config.creds_refresh_margin_sec)
+                    if datetime.now(timezone.utc) < self._iot_creds_expiry - margin:
+                        return self._iot_creds
+                access_token = await self.async_get_access_token()
+                generation = self._principal_generation
+                id_token = self._id_token
+                assert id_token is not None
+                creds = await asyncio.to_thread(
+                    self._gateway.iot_credentials, id_token, access_token
+                )
+                if generation != self._principal_generation:
+                    continue
+                self._iot_creds = creds
+                self._iot_creds_expiry = creds.expiration or (
+                    datetime.now(timezone.utc)
+                    + timedelta(seconds=self._config.url_expire_sec)
+                )
+                return creds
 
-    def _consume_auth_response(self, result: dict[str, Any]) -> None:
+    def _commit_auth_response(
+        self, username: str, result: dict[str, Any], generation: int
+    ) -> None:
         challenge = result.get("ChallengeName")
         if challenge in ("SOFTWARE_TOKEN_MFA", "SMS_MFA"):
+            self._ensure_current_generation(generation)
+            self._username = username
+            self._access_token = None
+            self._id_token = None
+            self._refresh_token = None
+            self._access_token_expiry = 0.0
+            self._iot_creds = None
+            self._iot_creds_expiry = None
             self._mfa_challenge = challenge
             self._mfa_session = result["Session"]
+            self._principal_generation += 1
             raise MfaRequired(
                 challenge_name=challenge,
                 session=result["Session"],
-                username=self._username or "",
+                username=username,
             )
-        self._store_tokens(result["AuthenticationResult"])
+        self._commit_authenticated(username, result["AuthenticationResult"], generation)
+
+    def _commit_authenticated(
+        self, username: str, auth: dict[str, Any], generation: int
+    ) -> None:
+        switching_principal = self._username != username
+        retained_refresh_token = None if switching_principal else self._refresh_token
+        tokens = self._stage_tokens(auth, retained_refresh_token)
+        self._ensure_current_generation(generation)
+        self._username = username
+        if switching_principal:
+            self._iot_creds = None
+            self._iot_creds_expiry = None
+        self._apply_tokens(tokens)
         self._mfa_challenge = None
         self._mfa_session = None
+        self._principal_generation += 1
 
-    def _store_tokens(self, auth: dict[str, Any]) -> None:
-        self._access_token = auth["AccessToken"]
-        self._id_token = auth["IdToken"]
-        if auth.get("RefreshToken"):
-            self._refresh_token = auth["RefreshToken"]
-        self._access_token_expiry = time.time() + float(auth.get("ExpiresIn", 3600))
+    def _install_tokens(self, auth: dict[str, Any]) -> None:
+        self._apply_tokens(self._stage_tokens(auth, self._refresh_token))
+
+    @staticmethod
+    def _stage_tokens(
+        auth: dict[str, Any], retained_refresh_token: str | None
+    ) -> tuple[str, str, str | None, float]:
+        refresh_token = auth.get("RefreshToken") or retained_refresh_token
+        return (
+            auth["AccessToken"],
+            auth["IdToken"],
+            refresh_token,
+            time.time() + float(auth.get("ExpiresIn", 3600)),
+        )
+
+    def _apply_tokens(self, tokens: tuple[str, str, str | None, float]) -> None:
+        (
+            self._access_token,
+            self._id_token,
+            self._refresh_token,
+            self._access_token_expiry,
+        ) = tokens
         self._persist_tokens()
+
+    def _ensure_current_generation(self, generation: int) -> None:
+        if generation != self._principal_generation:
+            raise PlaceAuthError("authentication superseded by a newer request")
 
     def _persist_tokens(self) -> None:
         """Best-effort write of the current refresh token to the cache (if configured)."""
