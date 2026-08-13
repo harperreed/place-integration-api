@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator, Callable
 from typing import Protocol, TypeVar
 
 from .auth.cognito_auth import CognitoAuth
 from .config import PlaceConfig
 from .device import PlaceDevice
+from .exceptions import PlaceError
 from .messages import (
     household_id_from_thing_name,
     household_subscription_topic,
@@ -24,6 +26,9 @@ from .transport import AiomqttTransport, MqttTransport, PlaceConnection
 
 OnMessage = Callable[[str, bytes], None]
 OnState = Callable[[bool], None]
+OnError = Callable[[PlaceError], None]
+
+logger = logging.getLogger(__name__)
 
 _ListenerT = TypeVar("_ListenerT")
 
@@ -44,7 +49,7 @@ class Connection(Protocol):
     def stop(self) -> None: ...
 
 
-ConnectionFactory = Callable[[OnMessage, OnState], Connection]
+ConnectionFactory = Callable[[OnMessage, OnState, OnError], Connection]
 
 
 def _aiomqtt_transport_factory(cfg: PlaceConfig, creds: Credentials) -> MqttTransport:
@@ -72,7 +77,10 @@ class PlaceClient:
         self._update_listeners: list[Callable[[PlaceDevice], None]] = []
         self._event_listeners: list[Callable[[DeviceEvent], None]] = []
         self._connection_listeners: list[Callable[[bool], None]] = []
-        self._connection: Connection = connection_factory(self._dispatch, self._set_connected)
+        self._error_listeners: list[OnError] = []
+        self._connection: Connection = connection_factory(
+            self._dispatch, self._set_connected, self._emit_error
+        )
         self._task: asyncio.Task[None] | None = None
 
     @classmethod
@@ -85,13 +93,16 @@ class PlaceClient:
     ) -> "PlaceClient":
         provider = Provider(auth)
 
-        def connection_factory(on_message: OnMessage, on_state: OnState) -> Connection:
+        def connection_factory(
+            on_message: OnMessage, on_state: OnState, on_error: OnError
+        ) -> Connection:
             return PlaceConnection(
                 config,
                 auth,
                 transport_factory=_aiomqtt_transport_factory,
                 on_message=on_message,
                 on_state=on_state,
+                on_error=on_error,
             )
 
         return cls(
@@ -162,6 +173,9 @@ class PlaceClient:
     ) -> Callable[[], None]:
         return self._register(self._connection_listeners, callback)
 
+    def on_error(self, callback: OnError) -> Callable[[], None]:
+        return self._register(self._error_listeners, callback)
+
     def updates(self) -> AsyncGenerator[PlaceDevice, None]:
         queue: asyncio.Queue[PlaceDevice] = asyncio.Queue()
         unsubscribe = self.on_update(queue.put_nowait)
@@ -226,6 +240,13 @@ class PlaceClient:
     def _emit_event(self, event: DeviceEvent) -> None:
         for callback in list(self._event_listeners):
             callback(event)
+
+    def _emit_error(self, error: PlaceError) -> None:
+        for callback in list(self._error_listeners):
+            try:
+                callback(error)
+            except Exception as exc:
+                logger.warning("Place error listener failed (%s)", type(exc).__name__)
 
     def _set_connected(self, connected: bool) -> None:
         if self._connected == connected:

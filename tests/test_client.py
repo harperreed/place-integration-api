@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
+
+import pytest
 
 if TYPE_CHECKING:
     from typing import override
@@ -18,6 +21,7 @@ from place.auth.cognito_auth import CognitoAuth
 from place.client import PlaceClient
 from place.config import PlaceConfig
 from place.device import PlaceDevice
+from place.exceptions import PlaceError, PlaceInvalidAuthError, PlaceTransientAuthError
 from place.messages import (
     household_subscription_topic,
     shadow_get_topic,
@@ -42,9 +46,11 @@ class FakeConnection:
         self,
         on_message: Callable[[str, bytes], None],
         on_state: Callable[[bool], None],
+        on_error: Callable[[PlaceError], None],
     ) -> None:
         self.on_message: Callable[[str, bytes], None] = on_message
         self.on_state: Callable[[bool], None] = on_state
+        self.on_error: Callable[[PlaceError], None] = on_error
         self.subscriptions: list[str] = []
         self.connect_publishes: list[tuple[str, bytes]] = []
         self.published: list[tuple[str, bytes]] = []
@@ -84,8 +90,9 @@ async def test_async_discover_returns_devices_without_starting_connection() -> N
     def connection_factory(
         on_message: Callable[[str, bytes], None],
         on_state: Callable[[bool], None],
+        on_error: Callable[[PlaceError], None],
     ) -> FakeConnection:
-        connection = FakeConnection(on_message, on_state)
+        connection = FakeConnection(on_message, on_state, on_error)
         created.append(connection)
         return connection
 
@@ -109,8 +116,9 @@ async def test_start_discovers_wires_subscriptions_and_launches() -> None:
     def connection_factory(
         on_message: Callable[[str, bytes], None],
         on_state: Callable[[bool], None],
+        on_error: Callable[[PlaceError], None],
     ) -> FakeConnection:
-        conn = FakeConnection(on_message, on_state)
+        conn = FakeConnection(on_message, on_state, on_error)
         created.append(conn)
         return conn
 
@@ -150,8 +158,9 @@ async def test_start_uses_public_discovery_contract() -> None:
     def connection_factory(
         on_message: Callable[[str, bytes], None],
         on_state: Callable[[bool], None],
+        on_error: Callable[[PlaceError], None],
     ) -> FakeConnection:
-        return FakeConnection(on_message, on_state)
+        return FakeConnection(on_message, on_state, on_error)
 
     client = ClientWithPublicDiscovery(
         PlaceConfig(),
@@ -185,8 +194,9 @@ async def test_start_unions_manual_household_with_derived() -> None:
     def connection_factory(
         on_message: Callable[[str, bytes], None],
         on_state: Callable[[bool], None],
+        on_error: Callable[[PlaceError], None],
     ) -> FakeConnection:
-        conn = FakeConnection(on_message, on_state)
+        conn = FakeConnection(on_message, on_state, on_error)
         created.append(conn)
         return conn
 
@@ -237,8 +247,9 @@ async def _started_client(
     def connection_factory(
         on_message: Callable[[str, bytes], None],
         on_state: Callable[[bool], None],
+        on_error: Callable[[PlaceError], None],
     ) -> FakeConnection:
-        conn = FakeConnection(on_message, on_state)
+        conn = FakeConnection(on_message, on_state, on_error)
         created.append(conn)
         return conn
 
@@ -323,6 +334,53 @@ async def test_connection_change_notifies_and_dedupes() -> None:
 
     assert changes == [True, False]
     assert client.connected is False
+    await client.stop()
+
+
+async def test_error_listener_receives_errors_until_unsubscribed() -> None:
+    client, conn = await _started_client("Place_PL1AS_EXAMPLE")
+    seen: list[PlaceError] = []
+    unsubscribe = client.on_error(seen.append)
+    transient = PlaceTransientAuthError("temporary")
+    invalid = PlaceInvalidAuthError("token rejected")
+
+    conn.on_error(transient)
+    unsubscribe()
+    conn.on_error(invalid)
+
+    assert seen == [transient]
+    assert seen[0] is transient
+    await client.stop()
+
+
+async def test_error_listener_mutation_and_failure_do_not_block_other_listeners(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client, conn = await _started_client("Place_PL1AS_EXAMPLE")
+    seen: list[PlaceError] = []
+    unsubscribe_self: Callable[[], None]
+    canary = "consumer-callback-secret-canary"
+
+    def remove_self(error: PlaceError) -> None:
+        _ = error
+        unsubscribe_self()
+
+    def broken_listener(error: PlaceError) -> None:
+        _ = error
+        raise RuntimeError(canary)
+
+    unsubscribe_self = client.on_error(remove_self)
+    _ = client.on_error(broken_listener)
+    _ = client.on_error(seen.append)
+    first = PlaceTransientAuthError("first")
+    second = PlaceTransientAuthError("second")
+
+    with caplog.at_level(logging.WARNING, logger="place.client"):
+        conn.on_error(first)
+        conn.on_error(second)
+
+    assert seen == [first, second]
+    assert canary not in caplog.text
     await client.stop()
 
 

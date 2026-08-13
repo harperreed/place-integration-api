@@ -17,7 +17,7 @@ import aiomqtt
 from aiomqtt import MqttError
 
 from .config import ALGORITHM, PATH, SCHEME, SERVICE, PlaceConfig
-from .exceptions import PlaceConnectionError, PlaceError
+from .exceptions import PlaceConnectionError, PlaceError, PlaceInvalidAuthError
 from .models import Credentials
 
 logger = logging.getLogger(__name__)
@@ -105,6 +105,7 @@ class MqttTransport(Protocol):
 
 
 TransportFactory = Callable[[PlaceConfig, Credentials], MqttTransport]
+OnError = Callable[[PlaceError], None]
 
 
 class AiomqttTransport:
@@ -165,6 +166,7 @@ class PlaceConnection:
         transport_factory: TransportFactory,
         on_message: Callable[[str, bytes], None],
         on_state: Callable[[bool], None] | None = None,
+        on_error: OnError | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         jitter: Callable[[float], float] | None = None,
     ) -> None:
@@ -173,6 +175,7 @@ class PlaceConnection:
         self._transport_factory: TransportFactory = transport_factory
         self._on_message: Callable[[str, bytes], None] = on_message
         self._on_state: Callable[[bool], None] | None = on_state
+        self._on_error: OnError | None = on_error
         self._sleep: Callable[[float], Awaitable[None]] = sleep
         self._jitter: Callable[[float], float] = jitter or (lambda d: d)
         self._subscriptions: list[str] = []
@@ -201,6 +204,27 @@ class PlaceConnection:
         remaining = (creds.expiration - datetime.now(timezone.utc)).total_seconds()
         return max(0.0, remaining - self._config.creds_refresh_margin_sec)
 
+    def _notify_error(self, error: PlaceError) -> None:
+        if self._on_error is None:
+            return
+        try:
+            self._on_error(error)
+        except Exception as exc:
+            logger.warning("Place error callback failed (%s)", type(exc).__name__)
+
+    async def _backoff(self, exc: BaseException, attempt: int) -> None:
+        delay = min(
+            self._config.reconnect_max_sec,
+            self._config.reconnect_min_sec * (2.0**attempt),
+        )
+        wait = self._jitter(delay)
+        logger.warning(
+            "Place connection error (%s); reconnecting in %.1fs",
+            type(exc).__name__,
+            wait,
+        )
+        await self._sleep(wait)
+
     async def run(self) -> None:
         attempt = 0
         while not self._stopped:
@@ -226,20 +250,18 @@ class PlaceConnection:
                         if self._on_state:
                             self._on_state(False)
                 attempt = 0
-            # A dropped MQTT session raises MqttError; a failed credential refresh
-            # (expired or throttled Cognito) surfaces as PlaceError from the gateway
-            # seam. Catch both so either feeds the backoff loop instead of escaping
-            # run() and silently killing reconnection.
-            except (MqttError, PlaceError) as exc:
+            except PlaceInvalidAuthError as exc:
+                self._notify_error(exc)
+                break
+            except MqttError as exc:
+                self._notify_error(PlaceConnectionError("MQTT connection failed"))
                 if self._stopped:
                     break
-                delay = min(
-                    self._config.reconnect_max_sec,
-                    self._config.reconnect_min_sec * (2.0**attempt),
-                )
+                await self._backoff(exc, attempt)
                 attempt += 1
-                wait = self._jitter(delay)
-                logger.warning(
-                    "Place connection error (%s); reconnecting in %.1fs", exc, wait
-                )
-                await self._sleep(wait)
+            except PlaceError as exc:
+                self._notify_error(exc)
+                if self._stopped:
+                    break
+                await self._backoff(exc, attempt)
+                attempt += 1

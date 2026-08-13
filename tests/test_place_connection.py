@@ -12,7 +12,13 @@ import pytest
 from aiomqtt import MqttError
 
 from place.config import PlaceConfig
-from place.exceptions import PlaceAuthError, PlaceConnectionError
+from place.exceptions import (
+    PlaceAuthError,
+    PlaceConnectionError,
+    PlaceError,
+    PlaceInvalidAuthError,
+    PlaceTransientAuthError,
+)
 from place.models import Credentials
 from place.transport import MqttTransport, PlaceConnection, TransportFactory
 
@@ -42,6 +48,20 @@ class FlakyAuth:
         self.calls += 1
         if self.calls <= self._fail_times:
             raise PlaceAuthError("credential fetch failed")
+        return _creds()
+
+
+class ScriptedAuth:
+    """Raises supplied errors in order, then returns credentials."""
+
+    def __init__(self, errors: list[PlaceError]) -> None:
+        self._errors: list[PlaceError] = errors
+        self.calls: int = 0
+
+    async def async_get_iot_credentials(self) -> Credentials:
+        self.calls += 1
+        if self._errors:
+            raise self._errors.pop(0)
         return _creds()
 
 
@@ -215,10 +235,17 @@ async def test_publish_while_connected_delegates_to_transport() -> None:
 class FlakyTransport:
     """Fails with MqttError for the first `fail_times` connects, then drains and stops."""
 
-    def __init__(self, attempt: int, fail_times: int, stop: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        attempt: int,
+        fail_times: int,
+        stop: Callable[[], None],
+        error_message: str = "dropped",
+    ) -> None:
         self._attempt: int = attempt
         self._fail_times: int = fail_times
         self._stop: Callable[[], None] = stop
+        self._error_message: str = error_message
 
     async def __aenter__(self) -> "FlakyTransport":
         return self
@@ -244,14 +271,16 @@ class FlakyTransport:
 
     async def messages(self) -> AsyncIterator[tuple[str, bytes]]:
         if self._attempt <= self._fail_times:
-            raise MqttError("dropped")
+            raise MqttError(self._error_message)
         self._stop()
         for _ in ():  # never runs; the empty loop makes this an async generator
             yield ("", b"")
 
 
 def _flaky_factory(
-    fail_times: int, stop_getter: Callable[[], Callable[[], None]]
+    fail_times: int,
+    stop_getter: Callable[[], Callable[[], None]],
+    error_message: str = "dropped",
 ) -> TransportFactory:
     state = {"n": 0}
 
@@ -259,7 +288,7 @@ def _flaky_factory(
         _ = cfg
         _ = creds
         state["n"] += 1
-        return FlakyTransport(state["n"], fail_times, stop_getter())
+        return FlakyTransport(state["n"], fail_times, stop_getter(), error_message)
 
     return factory
 
@@ -455,3 +484,143 @@ async def test_credential_failure_backs_off_and_retries(
     assert auth.calls == 2  # survived the PlaceAuthError and retried, not killed
     assert slept == [1.0]  # went through the backoff path (attempt 0 delay = min_sec)
     assert any("reconnecting" in record.message for record in caplog.records)
+
+
+async def test_invalid_auth_notifies_once_and_stops_without_backoff() -> None:
+    error = PlaceInvalidAuthError("refresh token rejected")
+    auth = ScriptedAuth([error])
+    seen: list[PlaceError] = []
+    slept: list[float] = []
+
+    conn = PlaceConnection(
+        PlaceConfig(reconnect_min_sec=1.0, reconnect_max_sec=60.0),
+        auth,
+        transport_factory=lambda cfg, creds: pytest.fail(
+            "transport must not be created after invalid authentication"
+        ),
+        on_message=lambda topic, payload: None,
+        on_error=seen.append,
+        sleep=lambda delay: _noop_sleep(slept, delay),
+    )
+
+    await conn.run()
+
+    assert seen == [error]
+    assert seen[0] is error
+    assert auth.calls == 1
+    assert slept == []
+
+
+async def test_transient_auth_notifies_and_retries() -> None:
+    error = PlaceTransientAuthError("identity service unavailable")
+    auth = ScriptedAuth([error])
+    seen: list[PlaceError] = []
+    slept: list[float] = []
+    subs: list[str] = []
+    published: list[tuple[str, bytes]] = []
+    factory: TransportFactory = lambda cfg, creds: ScriptedTransport(
+        [], subs, published, conn.stop
+    )
+
+    conn = PlaceConnection(
+        PlaceConfig(reconnect_min_sec=1.0, reconnect_max_sec=60.0),
+        auth,
+        transport_factory=factory,
+        on_message=lambda topic, payload: None,
+        on_error=seen.append,
+        sleep=lambda delay: _noop_sleep(slept, delay),
+    )
+
+    await conn.run()
+
+    assert seen == [error]
+    assert seen[0] is error
+    assert auth.calls == 2
+    assert slept == [1.0]
+
+
+async def test_mqtt_failure_notifies_with_sanitized_error_and_retries(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    canary = "mqtt-secret-canary"
+    seen: list[PlaceError] = []
+    slept: list[float] = []
+    conn = PlaceConnection(
+        PlaceConfig(reconnect_min_sec=1.0, reconnect_max_sec=60.0),
+        FakeAuth(_creds()),
+        transport_factory=_flaky_factory(1, lambda: conn.stop, canary),
+        on_message=lambda topic, payload: None,
+        on_error=seen.append,
+        sleep=lambda delay: _noop_sleep(slept, delay),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="place.transport"):
+        await conn.run()
+
+    assert len(seen) == 1
+    assert type(seen[0]) is PlaceConnectionError
+    assert str(seen[0]) == "MQTT connection failed"
+    assert seen[0].__cause__ is None
+    assert seen[0].__context__ is None
+    assert canary not in str(seen[0])
+    assert canary not in caplog.text
+    assert slept == [1.0]
+
+
+async def test_non_auth_place_error_notifies_and_retries() -> None:
+    error = PlaceConnectionError("credential gateway unavailable")
+    auth = ScriptedAuth([error])
+    seen: list[PlaceError] = []
+    slept: list[float] = []
+    subs: list[str] = []
+    published: list[tuple[str, bytes]] = []
+    factory: TransportFactory = lambda cfg, creds: ScriptedTransport(
+        [], subs, published, conn.stop
+    )
+    conn = PlaceConnection(
+        PlaceConfig(reconnect_min_sec=1.0, reconnect_max_sec=60.0),
+        auth,
+        transport_factory=factory,
+        on_message=lambda topic, payload: None,
+        on_error=seen.append,
+        sleep=lambda delay: _noop_sleep(slept, delay),
+    )
+
+    await conn.run()
+
+    assert seen == [error]
+    assert seen[0] is error
+    assert slept == [1.0]
+
+
+async def test_error_callback_failure_does_not_stop_reconnect_or_leak_message(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    canary = "callback-secret-canary"
+    slept: list[float] = []
+    subs: list[str] = []
+    published: list[tuple[str, bytes]] = []
+
+    def broken_callback(error: PlaceError) -> None:
+        _ = error
+        raise RuntimeError(canary)
+
+    auth = ScriptedAuth([PlaceTransientAuthError("temporary")])
+    factory: TransportFactory = lambda cfg, creds: ScriptedTransport(
+        [], subs, published, conn.stop
+    )
+    conn = PlaceConnection(
+        PlaceConfig(reconnect_min_sec=1.0, reconnect_max_sec=60.0),
+        auth,
+        transport_factory=factory,
+        on_message=lambda topic, payload: None,
+        on_error=broken_callback,
+        sleep=lambda delay: _noop_sleep(slept, delay),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="place.transport"):
+        await conn.run()
+
+    assert auth.calls == 2
+    assert slept == [1.0]
+    assert canary not in caplog.text
