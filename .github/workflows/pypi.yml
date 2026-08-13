@@ -14,6 +14,8 @@ jobs:
   build-release:
     name: Validate and build release package
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release-version.outputs.version }}
     steps:
       - name: Checkout full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -23,8 +25,17 @@ jobs:
         uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
         with:
           enable-cache: true
+          version: "0.9.25"
+          python-version: "3.11"
+      - name: Verify Python version
+        run: |
+          uv run --locked python --version
+          uv run --locked python -c 'import sys; assert sys.version_info[:2] == (3, 11), sys.version'
       - name: Verify release tag
-        run: uv run python scripts/check_release.py --tag "$GITHUB_REF_NAME"
+        id: release-version
+        run: |
+          release_version=$(uv run --locked python scripts/check_release.py --tag "$GITHUB_REF_NAME")
+          echo "version=$release_version" >> "$GITHUB_OUTPUT"
       - name: Run canonical checks
         run: SDK_DIST_DIR=dist scripts/check
       - name: Upload checked release artifacts
@@ -51,13 +62,42 @@ jobs:
           name: release-dists
           path: dist/
       - name: Publish
+        id: publish
+        continue-on-error: true
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: dist/
+          skip-existing: true
+
+  verify-release:
+    name: Verify published PyPI artifacts
+    needs: [build-release, pypi-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install uv
+        uses: astral-sh/setup-uv@ae62891fec2bb8e7d6c99fc78c9fec3a63790f8d # v10.0.0
+        with:
+          version: "0.9.25"
+          python-version: "3.11"
+      - name: Retrieve checked release artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-dists
+          path: dist/
+      - name: Verify PyPI filename and SHA-256 set
+        env:
+          RELEASE_VERSION: ${{ needs.build-release.outputs.version }}
+        run: >-
+          uv run --locked python scripts/verify_pypi_release.py
+          --project place-integration-api
+          --version "$RELEASE_VERSION"
+          --dist-dir dist
 
   github-release:
     name: Create GitHub release
-    needs: pypi-release
+    needs: verify-release
     runs-on: ubuntu-latest
     permissions:
       contents: write

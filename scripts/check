@@ -4,8 +4,8 @@
 set -eu
 
 uv sync --locked --extra dev
-uv run ruff format --check src tests examples
-uv run ruff check src tests examples
+uv run ruff format --check src tests examples scripts
+uv run ruff check src tests examples scripts
 uv run basedpyright
 uv run pytest
 if [ -n "${SDK_DIST_DIR:-}" ]; then

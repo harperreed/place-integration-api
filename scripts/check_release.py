@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import sys
 import tomllib
+from pathlib import Path
 
 
 def version_for_tag(tag: str, pyproject: Path) -> str:
@@ -24,11 +24,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Verify a release tag matches the project version."
     )
-    parser.add_argument("--tag", required=True, help="Release tag, with an optional v prefix")
+    parser.add_argument(
+        "--tag", required=True, help="Release tag, with an optional v prefix"
+    )
     args = parser.parse_args()
 
     try:
-        version = version_for_tag(args.tag, Path(__file__).parents[1] / "pyproject.toml")
+        version = version_for_tag(
+            args.tag, Path(__file__).parents[1] / "pyproject.toml"
+        )
     except ValueError as exc:
         parser.exit(1, f"error: {exc}\n")
 

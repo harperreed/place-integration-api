@@ -92,9 +92,11 @@ client starts subscriptions and shadow/get requests; it does not expose device c
 Install the locked development environment and run the same checks as CI:
 
 ```sh
-uv sync --extra dev
+uv sync --locked --extra dev
 scripts/check
 ```
 
-The canonical check formats, lints, type-checks, tests, builds, and validates both release
-artifacts. Releases must use a tag that matches the version in `pyproject.toml`.
+The canonical check checks formatting, lints, type-checks, tests, builds, and validates
+both release artifacts. Releases must use a tag that matches the version in
+`pyproject.toml`. After publishing, CI requires PyPI's file set and SHA-256 digests to
+match the local wheel and sdist exactly; an unexpected remote file fails verification.
