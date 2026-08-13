@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from typing import cast
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from typing import override
+else:
+
+    def override(method: object) -> object:
+        """Backport the type-checking-only override marker for Python 3.11."""
+        return method
 
 from place.auth.cognito_auth import CognitoAuth
 from place.client import PlaceClient
@@ -125,6 +133,41 @@ async def test_start_discovers_wires_subscriptions_and_launches() -> None:
 
     await client.stop()
     assert conn.stopped is True
+
+
+async def test_start_uses_public_discovery_contract() -> None:
+    public_discovered = [_discover("public-device")]
+    provider = FakeProvider([_discover("provider-device")])
+    discovery_calls = 0
+
+    class ClientWithPublicDiscovery(PlaceClient):
+        @override
+        async def async_discover(self) -> list[DiscoverDevice]:
+            nonlocal discovery_calls
+            discovery_calls += 1
+            return public_discovered
+
+    def connection_factory(
+        on_message: Callable[[str, bytes], None],
+        on_state: Callable[[bool], None],
+    ) -> FakeConnection:
+        return FakeConnection(on_message, on_state)
+
+    client = ClientWithPublicDiscovery(
+        PlaceConfig(),
+        auth=cast(CognitoAuth, object()),
+        provider=provider,
+        connection_factory=connection_factory,
+    )
+
+    await client.start()
+    try:
+        assert discovery_calls == 1
+        assert provider.discover_calls == 0
+        assert "public-device" in client.devices
+        assert "provider-device" not in client.devices
+    finally:
+        await client.stop()
 
 
 async def test_start_auto_derives_household_from_thing_name() -> None:
