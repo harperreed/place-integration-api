@@ -6,13 +6,17 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pytest
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from place.auth import cognito_gateway, srp_auth
 from place.auth.cognito_gateway import RealCognitoGateway
 from place.auth.srp_auth import get_iot_credentials, refresh_tokens, respond_mfa
 from place.config import PlaceConfig
-from place.exceptions import PlaceAuthError
+from place.exceptions import (
+    PlaceAuthError,
+    PlaceInvalidAuthError,
+    PlaceTransientAuthError,
+)
 from place.models import Credentials
 
 
@@ -63,6 +67,13 @@ class _FakeIdpClient:
     def respond_to_auth_challenge(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("respond_to_auth_challenge", kwargs))
         return self._respond
+
+
+def _client_error(code: str, message: str = "TOKEN-CANARY") -> ClientError:
+    return ClientError(
+        {"Error": {"Code": code, "Message": message}},
+        "InitiateAuth",
+    )
 
 
 def test_refresh_tokens_uses_refresh_token_auth_flow() -> None:
@@ -244,3 +255,155 @@ def test_respond_mfa_translates_botocore_to_place_auth_error(
             username="alice",
             code="123456",
         )
+
+
+def test_refresh_classifies_rejected_token_without_leaking_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _reject(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise _client_error("NotAuthorizedException")
+
+    monkeypatch.setattr(srp_auth, "refresh_tokens", _reject)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(PlaceInvalidAuthError) as caught:
+        _ = gateway.refresh("REFRESH-TOKEN-CANARY")
+
+    assert str(caught.value) == "token refresh rejected"
+    assert "TOKEN-CANARY" not in str(caught.value)
+    assert "REFRESH-TOKEN-CANARY" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        "TooManyRequestsException",
+        "InternalErrorException",
+        "ExternalServiceException",
+    ),
+)
+def test_refresh_classifies_transient_service_failures_without_leaking_response(
+    monkeypatch: pytest.MonkeyPatch,
+    code: str,
+) -> None:
+    def _fail(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise _client_error(code)
+
+    monkeypatch.setattr(srp_auth, "refresh_tokens", _fail)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(PlaceTransientAuthError) as caught:
+        _ = gateway.refresh("REFRESH-TOKEN-CANARY")
+
+    assert str(caught.value) == f"token refresh temporarily failed ({code})"
+    assert "TOKEN-CANARY" not in str(caught.value)
+    assert "REFRESH-TOKEN-CANARY" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        "NotAuthorizedException",
+        "UserNotFoundException",
+        "PasswordResetRequiredException",
+        "UserNotConfirmedException",
+    ),
+)
+def test_srp_login_classifies_credential_rejections(
+    monkeypatch: pytest.MonkeyPatch,
+    code: str,
+) -> None:
+    def _reject(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise _client_error(code)
+
+    monkeypatch.setattr(srp_auth, "get_tokens_via_srp", _reject)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(PlaceInvalidAuthError) as caught:
+        _ = gateway.srp_login("alice", "PASSWORD-CANARY")
+
+    assert str(caught.value) == "srp login rejected"
+    assert "TOKEN-CANARY" not in str(caught.value)
+    assert "PASSWORD-CANARY" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        "CodeMismatchException",
+        "ExpiredCodeException",
+        "NotAuthorizedException",
+        "UserNotFoundException",
+    ),
+)
+def test_mfa_classifies_challenge_rejections(
+    monkeypatch: pytest.MonkeyPatch,
+    code: str,
+) -> None:
+    def _reject(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise _client_error(code)
+
+    monkeypatch.setattr(srp_auth, "respond_mfa", _reject)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(PlaceInvalidAuthError) as caught:
+        _ = gateway.respond_mfa(
+            challenge_name="SOFTWARE_TOKEN_MFA",
+            session="SESSION-CANARY",
+            username="alice",
+            code="123456",
+        )
+
+    assert str(caught.value) == "mfa response rejected"
+    assert "TOKEN-CANARY" not in str(caught.value)
+    assert "SESSION-CANARY" not in str(caught.value)
+
+
+def test_iot_not_authorized_remains_retryable_plain_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _reject(*_args: object, **_kwargs: object) -> Credentials:
+        raise _client_error("NotAuthorizedException")
+
+    monkeypatch.setattr(srp_auth, "get_iot_credentials", _reject)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(PlaceAuthError) as caught:
+        _ = gateway.iot_credentials("ID-TOKEN-CANARY", "ACCESS-TOKEN-CANARY")
+
+    assert type(caught.value) is PlaceAuthError
+    assert str(caught.value) == "iot credential exchange failed (NotAuthorizedException)"
+    assert "TOKEN-CANARY" not in str(caught.value)
+
+
+def test_unknown_client_error_remains_retryable_plain_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fail(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise _client_error("FutureServiceException")
+
+    monkeypatch.setattr(srp_auth, "refresh_tokens", _fail)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(PlaceAuthError) as caught:
+        _ = gateway.refresh("REFRESH-TOKEN-CANARY")
+
+    assert type(caught.value) is PlaceAuthError
+    assert str(caught.value) == "token refresh failed (FutureServiceException)"
+    assert "TOKEN-CANARY" not in str(caught.value)
+
+
+def test_botocore_failure_is_transient_and_secret_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fail(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise BotoCoreError()
+
+    monkeypatch.setattr(srp_auth, "refresh_tokens", _fail)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(PlaceTransientAuthError) as caught:
+        _ = gateway.refresh("REFRESH-TOKEN-CANARY")
+
+    assert str(caught.value) == "token refresh temporarily failed (BotoCoreError)"
+    assert "REFRESH-TOKEN-CANARY" not in str(caught.value)

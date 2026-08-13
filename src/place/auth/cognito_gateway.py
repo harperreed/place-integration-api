@@ -3,29 +3,52 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Protocol, TypeVar
+from typing import Any, Protocol, TypeVar, cast
 
 from botocore.exceptions import BotoCoreError, ClientError
 
 from ..config import PlaceConfig
-from ..exceptions import PlaceAuthError
+from ..exceptions import (
+    PlaceAuthError,
+    PlaceInvalidAuthError,
+    PlaceTransientAuthError,
+)
 from ..models import Credentials
 from . import srp_auth
 
 _T = TypeVar("_T")
 
+_TRANSIENT_AUTH_CODES = frozenset(
+    {"TooManyRequestsException", "InternalErrorException", "ExternalServiceException"}
+)
+_NO_INVALID_AUTH_CODES: frozenset[str] = frozenset()
 
-def _as_place_auth_error(action: str, call: Callable[[], _T]) -> _T:
-    """Run a boto3-backed Cognito call, surfacing botocore failures as PlaceAuthError.
 
-    The gateway is the SDK's boto3 seam; translating here keeps the error taxonomy
-    (exceptions.py) the single contract a consumer — or PlaceConnection's reconnect
-    loop — catches, instead of leaking raw botocore exceptions.
-    """
+def _as_place_auth_error(
+    action: str,
+    call: Callable[[], _T],
+    *,
+    invalid_codes: frozenset[str] = _NO_INVALID_AUTH_CODES,
+) -> _T:
+    """Run a Cognito call and expose a typed, secret-safe SDK error."""
     try:
         return call()
-    except (ClientError, BotoCoreError) as exc:
-        raise PlaceAuthError(f"{action} failed: {exc}") from exc
+    except ClientError as exc:
+        response = cast(dict[str, object], exc.response)
+        error = response.get("Error")
+        error_details = cast(dict[str, object], error) if isinstance(error, dict) else {}
+        code = str(error_details.get("Code", "UnknownClientError"))
+        if code in invalid_codes:
+            raise PlaceInvalidAuthError(f"{action} rejected") from None
+        if code in _TRANSIENT_AUTH_CODES:
+            raise PlaceTransientAuthError(
+                f"{action} temporarily failed ({code})"
+            ) from None
+        raise PlaceAuthError(f"{action} failed ({code})") from None
+    except BotoCoreError as exc:
+        raise PlaceTransientAuthError(
+            f"{action} temporarily failed ({type(exc).__name__})"
+        ) from None
 
 
 class CognitoGateway(Protocol):
@@ -55,6 +78,14 @@ class RealCognitoGateway:
                 password=password,
                 region=self._config.region,
             ),
+            invalid_codes=frozenset(
+                {
+                    "NotAuthorizedException",
+                    "UserNotFoundException",
+                    "PasswordResetRequiredException",
+                    "UserNotConfirmedException",
+                }
+            ),
         )
 
     def refresh(self, refresh_token: str) -> dict[str, Any]:
@@ -65,6 +96,7 @@ class RealCognitoGateway:
                 region=self._config.region,
                 client_id=self._config.cognito_client_id,
             ),
+            invalid_codes=frozenset({"NotAuthorizedException"}),
         )
 
     def respond_mfa(
@@ -79,6 +111,14 @@ class RealCognitoGateway:
                 code=code,
                 region=self._config.region,
                 client_id=self._config.cognito_client_id,
+            ),
+            invalid_codes=frozenset(
+                {
+                    "CodeMismatchException",
+                    "ExpiredCodeException",
+                    "NotAuthorizedException",
+                    "UserNotFoundException",
+                }
             ),
         )
 

@@ -15,7 +15,9 @@ from .exceptions import (
     PlaceConnectionError,
     PlaceDiscoveryError,
     PlaceError,
+    PlaceInvalidAuthError,
     PlaceTimeoutError,
+    PlaceTransientAuthError,
 )
 from .models import (
     AlarmStatus,
@@ -40,6 +42,8 @@ __all__ = [
     "PlaceDevice",
     "PlaceError",
     "PlaceAuthError",
+    "PlaceInvalidAuthError",
+    "PlaceTransientAuthError",
     "MfaRequired",
     "PlaceConnectionError",
     "PlaceDiscoveryError",

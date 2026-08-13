@@ -21,6 +21,13 @@ def test_hierarchy() -> None:
     assert issubclass(MfaRequired, PlaceAuthError)
 
 
+def test_auth_failure_hierarchy_distinguishes_user_action_from_retry() -> None:
+    from place.exceptions import PlaceInvalidAuthError, PlaceTransientAuthError
+
+    assert issubclass(PlaceInvalidAuthError, PlaceAuthError)
+    assert issubclass(PlaceTransientAuthError, PlaceAuthError)
+
+
 def test_mfa_required_carries_challenge() -> None:
     exc = MfaRequired(
         challenge_name="SOFTWARE_TOKEN_MFA", session="sess-123", username="alice"

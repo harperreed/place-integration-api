@@ -21,7 +21,9 @@ def test_top_level_exports_are_importable() -> None:
         PlaceDeviceShadow,
         PlaceDiscoveryError,
         PlaceError,
+        PlaceInvalidAuthError,
         PlaceTimeoutError,
+        PlaceTransientAuthError,
         TokenCache,
     )
 
@@ -31,6 +33,8 @@ def test_top_level_exports_are_importable() -> None:
     assert PlaceDevice.__name__ == "PlaceDevice"
     assert CognitoAuth.__name__ == "CognitoAuth"
     assert issubclass(PlaceAuthError, PlaceError)
+    assert issubclass(PlaceInvalidAuthError, PlaceAuthError)
+    assert issubclass(PlaceTransientAuthError, PlaceAuthError)
     assert issubclass(MfaRequired, PlaceAuthError)
     for exc in (PlaceConnectionError, PlaceDiscoveryError, PlaceTimeoutError):
         assert issubclass(exc, PlaceError)

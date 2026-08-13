@@ -11,6 +11,14 @@ class PlaceAuthError(PlaceError):
     """Authentication or token refresh failed."""
 
 
+class PlaceInvalidAuthError(PlaceAuthError):
+    """Stored or supplied credentials were rejected and require user action."""
+
+
+class PlaceTransientAuthError(PlaceAuthError):
+    """Authentication failed temporarily and can be retried."""
+
+
 class MfaRequired(PlaceAuthError):
     """Login needs a second factor before it can complete."""
 
