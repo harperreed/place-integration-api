@@ -191,6 +191,7 @@ class CognitoAuth(AbstractAuth):
     ) -> None:
         challenge = result.get("ChallengeName")
         if challenge in ("SOFTWARE_TOKEN_MFA", "SMS_MFA"):
+            session = result["Session"]
             self._ensure_current_generation(generation)
             self._username = username
             self._access_token = None
@@ -200,11 +201,11 @@ class CognitoAuth(AbstractAuth):
             self._iot_creds = None
             self._iot_creds_expiry = None
             self._mfa_challenge = challenge
-            self._mfa_session = result["Session"]
+            self._mfa_session = session
             self._principal_generation += 1
             raise MfaRequired(
                 challenge_name=challenge,
-                session=result["Session"],
+                session=session,
                 username=username,
             )
         self._commit_authenticated(username, result["AuthenticationResult"], generation)

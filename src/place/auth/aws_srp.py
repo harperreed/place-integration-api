@@ -25,6 +25,10 @@ class ForceChangePasswordException(WarrantException):
     """Raised when the user is forced to change their password"""
 
 
+class _UnsupportedChallengeException(WarrantException):
+    """Raised when Cognito returns an authentication challenge this SRP client cannot answer."""
+
+
 # https://github.com/aws/amazon-cognito-identity-js/blob/master/src/AuthenticationHelper.js#L22
 n_hex = (
     "FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1"
@@ -283,7 +287,7 @@ class AWSSRP(object):
 
             return tokens
         else:
-            raise NotImplementedError(
+            raise _UnsupportedChallengeException(
                 "The %s challenge is not supported" % response["ChallengeName"]
             )
 
@@ -317,6 +321,6 @@ class AWSSRP(object):
                 return new_password_response
             return tokens
         else:
-            raise NotImplementedError(
+            raise _UnsupportedChallengeException(
                 "The %s challenge is not supported" % response["ChallengeName"]
             )

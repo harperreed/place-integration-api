@@ -92,6 +92,18 @@ def test_refresh_tokens_uses_refresh_token_auth_flow() -> None:
     )  # this app client has no secret
 
 
+def test_aws_srp_marks_unsupported_challenge_as_protocol_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    srp = object.__new__(aws_srp.AWSSRP)
+    srp.client = _FakeIdpClient(initiate={"ChallengeName": "CUSTOM_AUTH"})
+    srp.client_id = "cid"
+    monkeypatch.setattr(srp, "get_auth_params", lambda: {})
+
+    with pytest.raises(aws_srp._UnsupportedChallengeException):  # pyright: ignore[reportPrivateUsage]
+        _ = srp.authenticate_user()
+
+
 def test_respond_mfa_uses_software_token_code_key() -> None:
     client = _FakeIdpClient(respond={"AuthenticationResult": {"AccessToken": "a"}})
     result = respond_mfa(
@@ -361,7 +373,9 @@ def test_srp_login_classifies_unsupported_challenge_without_secret_chain(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     def _unsupported(*_args: object, **_kwargs: object) -> dict[str, object]:
-        raise NotImplementedError("SECRET-CANARY ACCOUNT-CANARY")
+        raise aws_srp._UnsupportedChallengeException(  # pyright: ignore[reportPrivateUsage]
+            "SECRET-CANARY ACCOUNT-CANARY"
+        )
 
     monkeypatch.setattr(srp_auth, "get_tokens_via_srp", _unsupported)
     gateway = RealCognitoGateway(PlaceConfig())
@@ -388,6 +402,23 @@ def test_srp_login_does_not_translate_unknown_programmer_error(
     gateway = RealCognitoGateway(PlaceConfig())
 
     with pytest.raises(ValueError) as caught:
+        _ = gateway.srp_login("alice", "password")
+
+    assert caught.value is source
+
+
+def test_srp_login_does_not_translate_programmer_not_implemented_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = NotImplementedError("programmer contract violation")
+
+    def _bug(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise source
+
+    monkeypatch.setattr(srp_auth, "get_tokens_via_srp", _bug)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(NotImplementedError) as caught:
         _ = gateway.srp_login("alice", "password")
 
     assert caught.value is source

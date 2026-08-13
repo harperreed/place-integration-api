@@ -669,6 +669,23 @@ async def test_malformed_srp_result_does_not_partially_switch_account() -> None:
     assert vars(auth) == old_state
 
 
+async def test_malformed_mfa_challenge_does_not_partially_switch_account() -> None:
+    gw = FakeGateway(
+        login={"AuthenticationResult": _auth_result(RefreshToken="rt-old")},
+        creds=_creds(datetime.now(timezone.utc) + timedelta(hours=5)),
+    )
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("old-account", "old-password")
+    await auth.async_get_iot_credentials()
+    old_state = vars(auth).copy()
+    gw._login = {"ChallengeName": "SOFTWARE_TOKEN_MFA"}
+
+    with pytest.raises(KeyError):
+        await auth.authenticate("new-account", "new-password")
+
+    assert vars(auth) == old_state
+
+
 async def test_new_account_mfa_replaces_old_account_with_pending_state() -> None:
     gw = FakeGateway(
         login={"AuthenticationResult": _auth_result(RefreshToken="rt-old")},

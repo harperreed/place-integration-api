@@ -15,7 +15,7 @@ from ..exceptions import (
 )
 from ..models import Credentials
 from . import srp_auth
-from .aws_srp import ForceChangePasswordException
+from .aws_srp import ForceChangePasswordException, _UnsupportedChallengeException
 
 _T = TypeVar("_T")
 
@@ -100,7 +100,7 @@ class RealCognitoGateway:
                 }
             ),
             invalid_exceptions=(ForceChangePasswordException,),
-            unsupported_exceptions=(NotImplementedError,),
+            unsupported_exceptions=(_UnsupportedChallengeException,),
         )
 
     def refresh(self, refresh_token: str) -> dict[str, Any]:
