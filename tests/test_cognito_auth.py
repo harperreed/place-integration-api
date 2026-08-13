@@ -295,6 +295,8 @@ async def test_authenticate_from_cache_uses_refresh_token_without_srp() -> None:
         {},
         {"username": "bob", "refresh_token": "rt-bob"},
         {"username": "alice"},
+        {"username": "alice", "refresh_token": ""},
+        {"username": "alice", "refresh_token": 123},
     ],
 )
 async def test_authenticate_from_cache_rejects_invalid_cache_without_gateway_calls(
