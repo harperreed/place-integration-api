@@ -11,7 +11,12 @@ from typing import Any
 from aiohttp import ClientSession
 
 from ..config import PlaceConfig
-from ..exceptions import MfaRequired, PlaceAuthError
+from ..exceptions import (
+    MfaRequired,
+    PlaceAuthError,
+    PlaceInvalidAuthError,
+    PlaceTransientAuthError,
+)
 from ..models import Credentials
 from .abstract_auth import AbstractAuth
 from .cognito_gateway import CognitoGateway, RealCognitoGateway
@@ -53,6 +58,32 @@ class CognitoAuth(AbstractAuth):
         result = await asyncio.to_thread(self._gateway.srp_login, username, password)
         self._consume_auth_response(result)
 
+    async def authenticate_from_cache(self, username: str) -> None:
+        """Authenticate with the configured refresh-token cache and never use SRP."""
+        self._username = username
+        if self._token_cache is None:
+            raise PlaceInvalidAuthError("no refresh-token cache configured")
+
+        cached: dict[str, Any] | None = None  # pyright: ignore[reportExplicitAny]
+        cache_failed = False
+        try:
+            cached = self._token_cache.load()
+        except Exception:
+            logger.warning("token cache load failed")
+            cache_failed = True
+        if cache_failed:
+            raise PlaceTransientAuthError("refresh-token cache unavailable") from None
+
+        if not cached or cached.get("username") != username:
+            raise PlaceInvalidAuthError("no refresh token for username")
+        refresh_token = cached.get("refresh_token")
+        if not isinstance(refresh_token, str) or not refresh_token:
+            raise PlaceInvalidAuthError("no refresh token for username")
+
+        auth = await asyncio.to_thread(self._gateway.refresh, refresh_token)
+        auth.setdefault("RefreshToken", refresh_token)
+        self._store_tokens(auth)
+
     async def _try_cached_login(self, username: str) -> bool:
         """Mint tokens from a cached refresh token, skipping SRP+MFA.
 
@@ -74,7 +105,7 @@ class CognitoAuth(AbstractAuth):
             return False
         try:
             auth = await asyncio.to_thread(self._gateway.refresh, refresh_token)
-        except PlaceAuthError:
+        except PlaceInvalidAuthError:
             logger.info("cached refresh token rejected; falling back to SRP login")
             return False
         # REFRESH_TOKEN_AUTH omits the refresh token; thread the cached one back in so the

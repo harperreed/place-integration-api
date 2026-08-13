@@ -11,7 +11,12 @@ import pytest
 
 from place.auth.cognito_auth import CognitoAuth
 from place.config import PlaceConfig
-from place.exceptions import MfaRequired, PlaceAuthError
+from place.exceptions import (
+    MfaRequired,
+    PlaceAuthError,
+    PlaceInvalidAuthError,
+    PlaceTransientAuthError,
+)
 from place.models import Credentials
 
 
@@ -260,6 +265,117 @@ class FakeCache:
         self.clears += 1
 
 
+class FailingLoadCache(FakeCache):
+    """TokenCache whose load failure contains a secret-like canary."""
+
+    def load(self) -> dict[str, Any] | None:  # pyright: ignore[reportImplicitOverride, reportExplicitAny]
+        raise RuntimeError("cache-canary-secret")
+
+
+async def test_authenticate_from_cache_uses_refresh_token_without_srp() -> None:
+    gw = FakeGateway(
+        login={"AuthenticationResult": _auth_result(AccessToken="access-srp")},
+        refresh={"AccessToken": "access-cached", "IdToken": "id-2", "ExpiresIn": 3600},
+    )
+    cache = FakeCache({"username": "alice", "refresh_token": "rt-cached"})
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw, token_cache=cache)  # pyright: ignore[reportArgumentType]
+
+    await auth.authenticate_from_cache("alice")
+
+    assert await auth.async_get_access_token() == "access-cached"
+    assert auth._refresh_token == "rt-cached"  # pyright: ignore[reportPrivateUsage]
+    assert gw.refresh_calls == 1
+    assert gw.login_calls == 0
+
+
+@pytest.mark.parametrize(
+    "cached",
+    [
+        None,
+        {},
+        {"username": "bob", "refresh_token": "rt-bob"},
+        {"username": "alice"},
+    ],
+)
+async def test_authenticate_from_cache_rejects_invalid_cache_without_gateway_calls(
+    cached: dict[str, Any] | None,  # pyright: ignore[reportExplicitAny]
+) -> None:
+    gw = FakeGateway()
+    auth = CognitoAuth(
+        PlaceConfig(),
+        websession=object(),  # pyright: ignore[reportArgumentType]
+        gateway=gw,  # pyright: ignore[reportArgumentType]
+        token_cache=FakeCache(cached),
+    )
+
+    with pytest.raises(PlaceInvalidAuthError):
+        await auth.authenticate_from_cache("alice")
+
+    assert gw.refresh_calls == 0
+    assert gw.login_calls == 0
+
+
+async def test_authenticate_from_cache_requires_a_configured_cache() -> None:
+    gw = FakeGateway()
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(PlaceInvalidAuthError, match="no refresh-token cache configured"):
+        await auth.authenticate_from_cache("alice")
+
+    assert gw.refresh_calls == 0
+    assert gw.login_calls == 0
+
+
+async def test_authenticate_from_cache_propagates_rejected_refresh_without_srp() -> None:
+    error = PlaceInvalidAuthError("refresh rejected")
+    gw = FakeGateway(refresh_error=error)
+    cache = FakeCache({"username": "alice", "refresh_token": "rt-stale"})
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw, token_cache=cache)  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(PlaceInvalidAuthError) as caught:
+        await auth.authenticate_from_cache("alice")
+
+    assert caught.value is error
+    assert gw.refresh_calls == 1
+    assert gw.login_calls == 0
+
+
+async def test_authenticate_from_cache_redacts_cache_load_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    gw = FakeGateway()
+    auth = CognitoAuth(
+        PlaceConfig(),
+        websession=object(),  # pyright: ignore[reportArgumentType]
+        gateway=gw,  # pyright: ignore[reportArgumentType]
+        token_cache=FailingLoadCache(),
+    )
+
+    with pytest.raises(PlaceTransientAuthError) as caught:
+        await auth.authenticate_from_cache("alice")
+
+    assert str(caught.value) == "refresh-token cache unavailable"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "cache-canary-secret" not in caplog.text
+    assert gw.refresh_calls == 0
+    assert gw.login_calls == 0
+
+
+async def test_authenticate_from_cache_propagates_transient_refresh_without_srp() -> None:
+    error = PlaceTransientAuthError("refresh temporarily unavailable")
+    gw = FakeGateway(refresh_error=error)
+    cache = FakeCache({"username": "alice", "refresh_token": "rt-cached"})
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw, token_cache=cache)  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(PlaceTransientAuthError) as caught:
+        await auth.authenticate_from_cache("alice")
+
+    assert caught.value is error
+    assert gw.refresh_calls == 1
+    assert gw.login_calls == 0
+
+
 async def test_authenticate_uses_cached_refresh_token_and_skips_srp() -> None:
     gw = FakeGateway(
         login={"AuthenticationResult": _auth_result(AccessToken="access-srp")},
@@ -292,7 +408,7 @@ async def test_cached_login_threads_refresh_token_into_memory() -> None:
 async def test_authenticate_falls_back_to_srp_when_cached_refresh_rejected() -> None:
     gw = FakeGateway(
         login={"AuthenticationResult": _auth_result(AccessToken="access-srp")},
-        refresh_error=PlaceAuthError("token refresh failed: expired"),
+        refresh_error=PlaceInvalidAuthError("token refresh failed: expired"),
     )
     cache = FakeCache({"username": "alice", "refresh_token": "rt-stale"})
     auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw, token_cache=cache)  # pyright: ignore[reportArgumentType]
@@ -302,6 +418,23 @@ async def test_authenticate_falls_back_to_srp_when_cached_refresh_rejected() -> 
     assert await auth.async_get_access_token() == "access-srp"
     assert gw.refresh_calls == 1  # tried the cached token...
     assert gw.login_calls == 1  # ...then fell back to SRP
+
+
+async def test_authenticate_propagates_transient_cached_refresh_without_srp() -> None:
+    error = PlaceTransientAuthError("refresh temporarily unavailable")
+    gw = FakeGateway(
+        login={"AuthenticationResult": _auth_result(AccessToken="access-srp")},
+        refresh_error=error,
+    )
+    cache = FakeCache({"username": "alice", "refresh_token": "rt-cached"})
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw, token_cache=cache)  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(PlaceTransientAuthError) as caught:
+        await auth.authenticate("alice", "pw")
+
+    assert caught.value is error
+    assert gw.refresh_calls == 1
+    assert gw.login_calls == 0
 
 
 async def test_authenticate_persists_refresh_token_after_srp_login() -> None:
