@@ -359,6 +359,35 @@ async def test_stop_propagates_caller_cancellation_and_remains_idempotent() -> N
     assert connection.stopped is True
 
 
+async def test_stop_completes_inside_handler_for_prior_caller_cancellation() -> None:
+    client, connection = await _started_slow_cancel_client()
+    handler_entered = asyncio.Event()
+    cleanup_completed = asyncio.Event()
+    wait_forever = asyncio.Event()
+
+    async def cancel_then_clean_up() -> None:
+        handler_entered.set()
+        try:
+            await wait_forever.wait()
+        except asyncio.CancelledError:
+            connection.finish_cancel.set()
+            await client.stop()
+            cleanup_completed.set()
+            raise
+
+    caller = asyncio.create_task(cancel_then_clean_up())
+    await handler_entered.wait()
+    caller.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    await client.stop()
+
+    assert cleanup_completed.is_set()
+    assert caller.cancelled() is True
+    assert connection.stopped is True
+
+
 async def test_shadow_message_updates_device_and_emits_update() -> None:
     client, conn = await _started_client("Place_PL1AS_EXAMPLE")
     updates: list[PlaceDevice] = []

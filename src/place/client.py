@@ -148,6 +148,8 @@ class PlaceClient:
         )  # let the connection task take its first step before we return
 
     async def stop(self) -> None:
+        caller = asyncio.current_task()
+        cancellation_requests = caller.cancelling() if caller is not None else 0
         self._connection.stop()
         owned_task = self._task
         if owned_task is None:
@@ -156,8 +158,7 @@ class PlaceClient:
         try:
             await owned_task
         except asyncio.CancelledError:
-            caller = asyncio.current_task()
-            if caller is not None and caller.cancelling():
+            if caller is not None and caller.cancelling() > cancellation_requests:
                 raise
         finally:
             if self._task is owned_task:
