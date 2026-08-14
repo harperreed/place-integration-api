@@ -6,40 +6,38 @@ from dataclasses import dataclass
 
 import decouple
 
-REGION = "us-east-2"
-SERVICE = "iotdevicegateway"
-ALGORITHM = "AWS4-HMAC-SHA256"
-SCHEME = "wss"
-PATH = "/mqtt"
-EXPIRE_SEC = 86400
-KEEP_ALIVE_SEC = 30
-FULFILLMENT_URL = (
+REGION: str = "us-east-2"
+SERVICE: str = "iotdevicegateway"
+ALGORITHM: str = "AWS4-HMAC-SHA256"
+SCHEME: str = "wss"
+PATH: str = "/mqtt"
+EXPIRE_SEC: int = 86400
+KEEP_ALIVE_SEC: int = 30
+FULFILLMENT_URL: str = (
     "https://14kbj32umd.execute-api.us-east-1.amazonaws.com/prod/fulfillment"
 )
 # Note: must be the regional IoT endpoint for now. Currently the custom IoT endpoint/domain configuration uses ApplicationProtocol.SECURE_MQTT
 # a second domain configuration must be created for ApplicationProtocol.MQTT_WSS in order to use the custom IoT endpoint instead.
-IOT_ENDPOINT = "a2ksnv5v3x6m50-ats.iot.us-east-2.amazonaws.com"
-COGNITO_USER_POOL_ID = "us-east-2_LKSPO9tT6"
-COGNITO_CLIENT_ID = "5blr1qf2evvj4ivircqbpqikev"
-COGNITO_IDENTITY_POOL_ID = "us-east-2:77c64042-63a1-4126-bdae-bd4150a73ad1"
-OAUTH2_TOKEN_URL = "https://auth.connectedsmoke.com/oauth2/token"
+IOT_ENDPOINT: str = "a2ksnv5v3x6m50-ats.iot.us-east-2.amazonaws.com"
+COGNITO_USER_POOL_ID: str = "us-east-2_LKSPO9tT6"
+COGNITO_CLIENT_ID: str = "5blr1qf2evvj4ivircqbpqikev"
+COGNITO_IDENTITY_POOL_ID: str = "us-east-2:77c64042-63a1-4126-bdae-bd4150a73ad1"
+OAUTH2_TOKEN_URL: str = "https://auth.connectedsmoke.com/oauth2/token"
 
 
 @dataclass(frozen=True)
 class PlaceConfig:
     """Injectable Place configuration. Defaults are the public PLACE app constants."""
 
-    region: str = "us-east-2"
-    iot_endpoint: str = "a2ksnv5v3x6m50-ats.iot.us-east-2.amazonaws.com"
-    cognito_user_pool_id: str = "us-east-2_LKSPO9tT6"
-    cognito_client_id: str = "5blr1qf2evvj4ivircqbpqikev"
-    cognito_identity_pool_id: str = "us-east-2:77c64042-63a1-4126-bdae-bd4150a73ad1"
-    fulfillment_url: str = (
-        "https://14kbj32umd.execute-api.us-east-1.amazonaws.com/prod/fulfillment"
-    )
-    oauth2_token_url: str = "https://auth.connectedsmoke.com/oauth2/token"
-    keep_alive_sec: int = 30
-    url_expire_sec: int = 86400
+    region: str = REGION
+    iot_endpoint: str = IOT_ENDPOINT
+    cognito_user_pool_id: str = COGNITO_USER_POOL_ID
+    cognito_client_id: str = COGNITO_CLIENT_ID
+    cognito_identity_pool_id: str = COGNITO_IDENTITY_POOL_ID
+    fulfillment_url: str = FULFILLMENT_URL
+    oauth2_token_url: str = OAUTH2_TOKEN_URL
+    keep_alive_sec: int = KEEP_ALIVE_SEC
+    url_expire_sec: int = EXPIRE_SEC
     reconnect_min_sec: float = 1.0
     reconnect_max_sec: float = 60.0
     token_refresh_margin_sec: int = 300

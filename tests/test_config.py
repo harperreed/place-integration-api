@@ -9,10 +9,11 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, get_type_hints
 
 import pytest
 
+from place import config as config_module
 from place.config import PlaceConfig
 
 CONFIG_ENV = {
@@ -123,6 +124,45 @@ def test_defaults_are_the_known_public_constants() -> None:
     )
     assert cfg.keep_alive_sec == 30
     assert cfg.url_expire_sec == 86400
+
+
+def test_dataclass_defaults_match_public_module_constants() -> None:
+    field_defaults = {
+        field.name: field.default for field in dataclasses.fields(PlaceConfig)
+    }
+
+    assert field_defaults["region"] == config_module.REGION
+    assert field_defaults["iot_endpoint"] == config_module.IOT_ENDPOINT
+    assert field_defaults["cognito_user_pool_id"] == config_module.COGNITO_USER_POOL_ID
+    assert field_defaults["cognito_client_id"] == config_module.COGNITO_CLIENT_ID
+    assert (
+        field_defaults["cognito_identity_pool_id"]
+        == config_module.COGNITO_IDENTITY_POOL_ID
+    )
+    assert field_defaults["fulfillment_url"] == config_module.FULFILLMENT_URL
+    assert field_defaults["oauth2_token_url"] == config_module.OAUTH2_TOKEN_URL
+    assert field_defaults["keep_alive_sec"] == config_module.KEEP_ALIVE_SEC
+    assert field_defaults["url_expire_sec"] == config_module.EXPIRE_SEC
+
+
+def test_public_module_constants_keep_runtime_type_annotations() -> None:
+    annotations = get_type_hints(config_module)
+
+    assert annotations == {
+        "REGION": str,
+        "SERVICE": str,
+        "ALGORITHM": str,
+        "SCHEME": str,
+        "PATH": str,
+        "EXPIRE_SEC": int,
+        "KEEP_ALIVE_SEC": int,
+        "FULFILLMENT_URL": str,
+        "IOT_ENDPOINT": str,
+        "COGNITO_USER_POOL_ID": str,
+        "COGNITO_CLIENT_ID": str,
+        "COGNITO_IDENTITY_POOL_ID": str,
+        "OAUTH2_TOKEN_URL": str,
+    }
 
 
 def test_plain_config_ignores_environment_and_dotenv(tmp_path: Path) -> None:
