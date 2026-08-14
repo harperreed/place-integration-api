@@ -6,11 +6,11 @@ import asyncio
 import logging
 
 import pytest
-from aiohttp import ClientError
+from aiohttp import ClientError, ServerTimeoutError
 
 from place.auth.abstract_auth import AbstractAuth
 from place.config import FULFILLMENT_URL
-from place.exceptions import PlaceAuthError, PlaceDiscoveryError
+from place.exceptions import PlaceAuthError, PlaceDiscoveryError, PlaceTimeoutError
 from place.provider import Provider
 
 
@@ -213,3 +213,59 @@ def test_provider_discover_lets_place_auth_error_propagate() -> None:
         _ = asyncio.run(provider.discover())
 
     assert caught.value is auth_error
+
+
+@pytest.mark.parametrize("timeout_type", [TimeoutError, ServerTimeoutError])
+@pytest.mark.parametrize("stage", ["request", "response"])
+def test_provider_discover_normalizes_network_timeouts_without_secret_context(
+    caplog: pytest.LogCaptureFixture,
+    timeout_type: type[TimeoutError],
+    stage: str,
+) -> None:
+    """Request and response timeouts use the stable public timeout taxonomy."""
+
+    class TimeoutResponse:
+        async def json(self):
+            raise timeout_type("TIMEOUT-SECRET-CANARY")
+
+    class TimeoutAuth(AbstractAuth):
+        def __init__(self) -> None:
+            pass
+
+        async def async_get_access_token(self) -> str:
+            return "token"
+
+        async def request(self, method, url, **kwargs):
+            if stage == "request":
+                raise timeout_type("TIMEOUT-SECRET-CANARY")
+            return TimeoutResponse()
+
+    provider = Provider(TimeoutAuth())
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(PlaceTimeoutError) as excinfo:
+            _ = asyncio.run(provider.discover())
+
+    assert str(excinfo.value) == "PLACE discovery timed out"
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    assert "CANARY" not in caplog.text
+
+
+@pytest.mark.parametrize("error", [asyncio.CancelledError(), RuntimeError("bug")])
+def test_provider_discover_preserves_non_network_failures(error: BaseException) -> None:
+    """Cancellation and programmer failures must not be normalized."""
+
+    class FailingAuth(AbstractAuth):
+        def __init__(self) -> None:
+            pass
+
+        async def async_get_access_token(self) -> str:
+            return "token"
+
+        async def request(self, method, url, **kwargs):
+            raise error
+
+    with pytest.raises(type(error)) as excinfo:
+        _ = asyncio.run(Provider(FailingAuth()).discover())
+
+    assert excinfo.value is error

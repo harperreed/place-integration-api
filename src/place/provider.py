@@ -8,7 +8,7 @@ from aiohttp import ClientError
 
 from .auth.abstract_auth import AbstractAuth
 from .config import FULFILLMENT_URL
-from .exceptions import PlaceDiscoveryError
+from .exceptions import PlaceDiscoveryError, PlaceTimeoutError
 from .models.discover_device import DiscoverDevice
 
 
@@ -18,13 +18,15 @@ class Provider:
 
     async def discover(self) -> list[DiscoverDevice]:
         body = {"command": "DISCOVER", "data": {}}
-        transport_error: PlaceDiscoveryError | None = None
+        transport_error: PlaceDiscoveryError | PlaceTimeoutError | None = None
         data: dict[str, Any] | None = None
         try:
             resp = await self.authorized_session.request(
                 "POST", FULFILLMENT_URL, json=body
             )
             data = await resp.json()
+        except TimeoutError:
+            transport_error = PlaceTimeoutError("PLACE discovery timed out")
         except ClientError:
             transport_error = PlaceDiscoveryError("could not reach PLACE discovery")
         if transport_error is not None:
