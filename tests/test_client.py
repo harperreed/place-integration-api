@@ -79,6 +79,32 @@ class FakeConnection:
         self._gate.set()
 
 
+class SlowCancelConnection(FakeConnection):
+    """Expose the real cancellation boundary inside connection-task cleanup."""
+
+    def __init__(
+        self,
+        on_message: Callable[[str, bytes], None],
+        on_state: Callable[[bool], None],
+        on_error: Callable[[PlaceError], None],
+    ) -> None:
+        super().__init__(on_message, on_state, on_error)
+        self.cancel_received = asyncio.Event()
+        self.finish_cancel = asyncio.Event()
+
+    @override
+    async def run(self) -> None:
+        """Hold the owned task after it receives its genuine cancellation."""
+        self.run_calls += 1
+        self.started = True
+        try:
+            _ = await self._gate.wait()
+        except asyncio.CancelledError:
+            self.cancel_received.set()
+            await self.finish_cancel.wait()
+            raise
+
+
 def _discover(thing: str) -> DiscoverDevice:
     return DiscoverDevice.from_dict(
         {"thingName": thing, "deviceId": "dev-1", "shadow": {}}
@@ -282,6 +308,55 @@ async def _started_client(
     )
     await client.start()
     return client, created[0]
+
+
+async def _started_slow_cancel_client() -> tuple[PlaceClient, SlowCancelConnection]:
+    created: list[SlowCancelConnection] = []
+
+    def connection_factory(
+        on_message: Callable[[str, bytes], None],
+        on_state: Callable[[bool], None],
+        on_error: Callable[[PlaceError], None],
+    ) -> SlowCancelConnection:
+        connection = SlowCancelConnection(on_message, on_state, on_error)
+        created.append(connection)
+        return connection
+
+    client = PlaceClient(
+        PlaceConfig(),
+        auth=cast(CognitoAuth, object()),
+        provider=FakeProvider([_discover("Place_PL1AS_EXAMPLE")]),
+        connection_factory=connection_factory,
+    )
+    await client.start()
+    return client, created[0]
+
+
+async def test_stop_consumes_owned_connection_task_cancellation() -> None:
+    client, connection = await _started_slow_cancel_client()
+    stop = asyncio.create_task(client.stop())
+    await connection.cancel_received.wait()
+
+    connection.finish_cancel.set()
+    await stop
+    await client.stop()
+
+    assert stop.cancelled() is False
+    assert connection.stopped is True
+
+
+async def test_stop_propagates_caller_cancellation_and_remains_idempotent() -> None:
+    client, connection = await _started_slow_cancel_client()
+    stop = asyncio.create_task(client.stop())
+    await connection.cancel_received.wait()
+
+    stop.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stop
+    await client.stop()
+
+    assert stop.cancelled() is True
+    assert connection.stopped is True
 
 
 async def test_shadow_message_updates_device_and_emits_update() -> None:

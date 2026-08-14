@@ -149,13 +149,19 @@ class PlaceClient:
 
     async def stop(self) -> None:
         self._connection.stop()
-        if self._task is not None:
-            _ = self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
+        owned_task = self._task
+        if owned_task is None:
+            return
+        _ = owned_task.cancel()
+        try:
+            await owned_task
+        except asyncio.CancelledError:
+            caller = asyncio.current_task()
+            if caller is not None and caller.cancelling():
+                raise
+        finally:
+            if self._task is owned_task:
+                self._task = None
 
     async def __aenter__(self) -> "PlaceClient":
         await self.start()
