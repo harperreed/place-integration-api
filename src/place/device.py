@@ -77,8 +77,9 @@ class PlaceDevice:
 
         Independently, a message that carries reported state stamps last_shadow_at
         — even when it changes nothing — because a device answering at all proves
-        it is alive. That liveness stamp is silent: availability is read by polling
-        the timestamp, not pushed. ``now`` is injectable for tests.
+        it is alive. That stamp does not notify this device's change listeners;
+        PlaceClient emits its public update callback and stream for the liveness
+        reply. ``now`` is injectable for tests.
         """
         if PlaceDeviceShadow.carries_reported_state(message):
             self.last_shadow_at = time.monotonic() if now is None else now

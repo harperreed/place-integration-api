@@ -165,7 +165,8 @@ Depends on: `PlaceConfig`, `CognitoAuth`, `aiomqtt`, `exceptions`.
 - Identity from `DiscoverDevice`; current `PlaceDeviceShadow`; last event(s); `online`.
 - `_apply_shadow(doc)` — merges a shadow document (via existing `PlaceDeviceShadow.merge`).
 - `_apply_event(DeviceEvent)` — records a discrete event (live motion, etc.).
-- Emits change notifications to registered listeners after applying.
+- Stamps `last_shadow_at` for every message carrying reported state, even when the
+  cached fields do not change. Its own registered listeners remain field-change only.
 
 Reuses `PlaceDeviceShadow`, `DeviceEvent`, `DiscoverDevice`. This is what HA entities
 would read; callbacks/iterator are just *views* over it (one source of truth).
@@ -185,13 +186,16 @@ Depends on: `models/`.
   each device shadow topic, and issues an initial `shadow/get` per device (read).
 - `devices: Mapping[str, PlaceDevice]` — by thing_name/device id.
 - `on_update(cb) -> unsubscribe` / `on_event(cb) -> unsubscribe` — register listeners
-  (device-state change; discrete event). Returns an unsubscribe handle.
+  (device-state change or reported-shadow liveness reply; discrete event). Returns an
+  unsubscribe handle.
 - `updates()` — thin async-iterator over the same notifications, for scripts.
 - `async async_refresh_shadow(device)` — force a `shadow/get` read.
 - `connected` + `on_connection_change(cb)` — surfaced from `PlaceConnection`.
 - **Dispatch** (the folded-in `HouseholdEventListener` logic): route each incoming
   `(topic, payload)` — shadow docs → `device._apply_shadow`; events → `DeviceEvent` →
-  `device._apply_event` — then fire listeners.
+  `device._apply_event` — then fire listeners. Every valid shadow message carrying
+  reported state emits a client update, including value-identical replies; empty MQTT
+  wildcard echoes neither stamp liveness nor emit.
 
 Depends on: everything above + `Provider`.
 
@@ -201,8 +205,9 @@ Depends on: everything above + `Provider`.
 subscribe(household events, each device shadow) → `shadow/get` per device.
 
 **Steady state**: message arrives on the single aiomqtt stream → dispatch classifies by
-topic → `PlaceDevice.apply_*` updates the one source of truth → listeners fire →
-consumer reads `client.devices[id]` (or receives the callback / iterator item).
+topic → `PlaceDevice.apply_*` updates the one source of truth → client listeners fire
+for field changes, events, and reported-shadow liveness replies → consumer reads
+`client.devices[id]` (or receives the callback / iterator item).
 
 **Reconnect / refresh**: connection drops or hits the proactive creds deadline → outer
 loop backs off → re-acquires fresh IoT creds (refreshing the Cognito token first if
@@ -256,7 +261,8 @@ convention (fake auth/`DummyAuth`, fakes that skip `super().__init__()` like
 - **Device**: shadow merge + event apply + listener notification (absent fields stay
   `None`, not invented).
 - **Client**: startup wiring (discover → subscribe set → initial `shadow/get`),
-  `on_update`/`on_event`/`updates()` delivery, unsubscribe handles, connection-state
+  `on_update`/`on_event`/`updates()` delivery for field changes and reported-shadow
+  liveness replies, silent empty MQTT echoes, unsubscribe handles, connection-state
   propagation.
 - **End-to-end stays manual**: the real-device example scripts exercise the live account
   (real data, no mocks) — not unit tests, consistent with the current repo.

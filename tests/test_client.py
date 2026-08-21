@@ -403,6 +403,26 @@ async def test_shadow_message_updates_device_and_emits_update() -> None:
     await client.stop()
 
 
+async def test_identical_reported_shadow_advances_liveness_and_emits_update() -> None:
+    client, conn = await _started_client("Place_PL1AS_EXAMPLE")
+    device = client.devices["Place_PL1AS_EXAMPLE"]
+    _ = device.apply_shadow({"state": {"reported": {"coPpm": 12}}}, now=-1.0)
+    previous_shadow_at = device.last_shadow_at
+    updates: list[PlaceDevice] = []
+    _ = client.on_update(updates.append)
+
+    conn.on_message(
+        "$aws/things/Place_PL1AS_EXAMPLE/shadow/get/accepted",
+        b'{"state":{"reported":{"coPpm":12}}}',
+    )
+
+    assert previous_shadow_at is not None
+    assert device.last_shadow_at is not None
+    assert device.last_shadow_at > previous_shadow_at
+    assert updates == [device]
+    await client.stop()
+
+
 async def test_noop_shadow_message_does_not_emit_update() -> None:
     # An empty-payload shadow message — our own shadow/get echoed back on the
     # shadow/# wildcard — merges to a no-op and must NOT emit a spurious update.
@@ -433,15 +453,19 @@ async def test_event_message_routes_and_emits_event() -> None:
     await client.stop()
 
 
-async def test_updates_iterator_yields_changed_devices() -> None:
+async def test_updates_iterator_yields_identical_reported_liveness_reply() -> None:
     client, conn = await _started_client("Place_PL1AS_EXAMPLE")
+    conn.on_message(
+        "$aws/things/Place_PL1AS_EXAMPLE/shadow/get/accepted",
+        b'{"state":{"reported":{"coPpm":1}}}',
+    )
     stream = client.updates()
 
     conn.on_message(
         "$aws/things/Place_PL1AS_EXAMPLE/shadow/get/accepted",
         b'{"state":{"reported":{"coPpm":1}}}',
     )
-    device = await stream.__anext__()
+    device = await asyncio.wait_for(stream.__anext__(), timeout=0.1)
 
     assert device.shadow.co_ppm == 1
     await stream.aclose()

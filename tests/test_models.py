@@ -283,11 +283,11 @@ def test_merge_updates_telemetry_in_place() -> None:
     assert s.temperature_c == 23.9185791015625  # unchanged
 
 
-# --- merge reports whether it changed anything (so callers emit on change) ----
+# --- merge reports whether it changed anything --------------------------------
 
 
 def test_merge_returns_true_when_a_value_changes() -> None:
-    """merge reports a real change, so callers can notify only when state moved."""
+    """merge reports a real shadow-field change."""
     s = PlaceDeviceShadow.from_shadow(REAL_PL1AS_SHADOW)
     assert s.merge({"state": {"reported": {"coPpm": 999}}}) is True
 
@@ -295,9 +295,8 @@ def test_merge_returns_true_when_a_value_changes() -> None:
 def test_merge_returns_false_when_nothing_changes() -> None:
     """An empty or value-identical update is a no-op: merge reports no change.
 
-    This is what lets the client suppress the spurious update it would otherwise
-    fire for an empty-payload shadow message (our own shadow/get echoed back on
-    the shadow/# wildcard, or a retained one).
+    The client separately checks for reported state: it suppresses an empty MQTT
+    echo but emits a liveness update for a value-identical device reply.
     """
     s = PlaceDeviceShadow.from_shadow(REAL_PL1AS_SHADOW)
     assert s.merge({}) is False

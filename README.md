@@ -90,6 +90,17 @@ finally:
 `async_discover()` reads the account device list without starting MQTT. Entering the
 client starts subscriptions and shadow/get requests; it does not expose device controls.
 
+## Device updates and liveness
+
+`PlaceClient.on_update()` and `PlaceClient.updates()` deliver device state changes,
+device events, and every valid shadow reply that carries reported state. A reply still
+emits when all reported values match the cached shadow: it advances the device's
+monotonic `last_shadow_at` timestamp and tells consumers to recheck availability. An
+empty MQTT echo carries no reported state, does not stamp liveness, and stays silent.
+
+`PlaceDevice.add_listener()` remains a field-change listener. Code that needs liveness
+notifications should use the client callback or async iterator.
+
 ## Development
 
 Install the locked development environment and run the same checks as CI:

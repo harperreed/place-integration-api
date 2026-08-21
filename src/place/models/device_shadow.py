@@ -221,12 +221,12 @@ class PlaceDeviceShadow:
     def merge(self, partial: dict[str, Any]) -> bool:
         """Merge a sparse shadow update into the current state.
 
-        Returns whether the merge actually changed any field. Callers gate their
-        change notifications on this, so an empty or value-identical update (an
-        empty-payload shadow message echoed back on the shadow/# wildcard, or a
-        retained one) stays a silent no-op. Snapshotting the whole shadow and
-        comparing keeps that judgment in one place, rather than threading a
-        changed-flag through every field assignment.
+        Returns whether the merge actually changed any field. PlaceDevice gates its
+        field-change listeners on this result. PlaceClient separately uses
+        ``carries_reported_state`` so a value-identical device reply can publish a
+        liveness update while an empty shadow/# echo stays silent. Snapshotting the
+        whole shadow and comparing keeps that judgment in one place, rather than
+        threading a changed flag through every field assignment.
         """
         before = deepcopy(self)
         reported = partial.get("state", partial).get("reported", partial)

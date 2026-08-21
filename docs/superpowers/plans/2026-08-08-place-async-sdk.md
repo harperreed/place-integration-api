@@ -2168,7 +2168,7 @@ Route incoming messages to devices, expose `on_update`/`on_event`/`on_connection
 
 **Interfaces:**
 - Consumes: Task 14; `parse_payload`, `thing_name_from_topic` (messages); `DeviceEvent`, `EVENTS_SEGMENT` (models).
-- Produces: `on_update(cb: Callable[[PlaceDevice], None]) -> unsub`; `on_event(cb: Callable[[DeviceEvent], None]) -> unsub`; `on_connection_change(cb: Callable[[bool], None]) -> unsub`; `updates() -> AsyncIterator[PlaceDevice]`; `connected -> bool`. `_dispatch` routes shadow topics (`$aws/things/{thing}/shadow/...`) to `device.apply_shadow` and household `.../events/{type}` topics to `device.apply_event` + event listeners.
+- Produces: `on_update(cb: Callable[[PlaceDevice], None]) -> unsub`; `on_event(cb: Callable[[DeviceEvent], None]) -> unsub`; `on_connection_change(cb: Callable[[bool], None]) -> unsub`; `updates() -> AsyncIterator[PlaceDevice]`; `connected -> bool`. `_dispatch` routes shadow topics (`$aws/things/{thing}/shadow/...`) to `device.apply_shadow` and household `.../events/{type}` topics to `device.apply_event` + event listeners. The current client contract emits `on_update`/`updates()` for every valid message carrying reported shadow state, including a value-identical liveness reply; empty MQTT wildcard echoes remain silent. This contract supersedes the historical implementation sketch below without changing `PlaceDevice`'s field-change-only listener semantics.
 
 - [ ] **Step 1: Write the failing test**
 

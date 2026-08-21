@@ -19,7 +19,7 @@ from .messages import (
     shadow_subscription_topic,
     thing_name_from_topic,
 )
-from .models import Credentials, DeviceEvent, DiscoverDevice
+from .models import Credentials, DeviceEvent, DiscoverDevice, PlaceDeviceShadow
 from .models.device_event import EVENTS_SEGMENT
 from .provider import Provider
 from .transport import AiomqttTransport, MqttTransport, PlaceConnection
@@ -176,6 +176,12 @@ class PlaceClient:
         return self._connected
 
     def on_update(self, callback: Callable[[PlaceDevice], None]) -> Callable[[], None]:
+        """Register for device changes and valid reported-shadow replies.
+
+        Reported replies emit even when all values match the cached shadow because
+        receiving one advances the device's liveness timestamp. Empty MQTT echoes
+        carry no reported state and remain silent.
+        """
         return self._register(self._update_listeners, callback)
 
     def on_event(self, callback: Callable[[DeviceEvent], None]) -> Callable[[], None]:
@@ -190,6 +196,7 @@ class PlaceClient:
         return self._register(self._error_listeners, callback)
 
     def updates(self) -> AsyncGenerator[PlaceDevice, None]:
+        """Yield the same device updates delivered by ``on_update``."""
         queue: asyncio.Queue[PlaceDevice] = asyncio.Queue()
         unsubscribe = self.on_update(queue.put_nowait)
 
@@ -224,8 +231,10 @@ class PlaceClient:
         thing = thing_name_from_topic(topic)
         if thing is not None:
             device = self._devices.get(thing)
-            if device is not None and device.apply_shadow(payload):
-                self._emit_update(device)
+            if device is not None:
+                changed = device.apply_shadow(payload)
+                if changed or PlaceDeviceShadow.carries_reported_state(payload):
+                    self._emit_update(device)
             return
         if EVENTS_SEGMENT in topic:
             event = DeviceEvent.from_message(topic, payload)
