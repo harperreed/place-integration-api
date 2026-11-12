@@ -77,11 +77,13 @@ def _client_error(code: str, message: str = "TOKEN-CANARY") -> ClientError:
 
 
 def test_refresh_tokens_uses_refresh_token_auth_flow() -> None:
-    client = _FakeIdpClient(initiate={"AuthenticationResult": {"AccessToken": "new-a"}})
+    client = _FakeIdpClient(
+        initiate={"AuthenticationResult": {"AccessToken": "new-a", "IdToken": "new-i"}}
+    )
     result = refresh_tokens(
         "refresh-abc", region="us-east-2", client_id="cid", cognito_idp_client=client
     )
-    assert result == {"AccessToken": "new-a"}
+    assert result == {"AccessToken": "new-a", "IdToken": "new-i"}
     name, kwargs = client.calls[0]
     assert name == "initiate_auth"
     assert kwargs["AuthFlow"] == "REFRESH_TOKEN_AUTH"
@@ -545,3 +547,216 @@ def test_botocore_translation_drops_secret_bearing_exception_chain(
     assert "SECRET-CANARY" in str(source)
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize(
+    "challenge",
+    ("SMS_MFA", "SOFTWARE_TOKEN_MFA", "NEW_PASSWORD_REQUIRED", "CUSTOM_AUTH"),
+)
+def test_refresh_tokens_translates_challenge_response_to_invalid_auth_error(
+    challenge: str,
+) -> None:
+    """A challenge cannot be answered from a refresh token, so it needs user action."""
+    client = _FakeIdpClient(
+        initiate={"ChallengeName": challenge, "Session": "SESSION-CANARY"}
+    )
+
+    with pytest.raises(PlaceInvalidAuthError) as caught:
+        _ = refresh_tokens(
+            "REFRESH-TOKEN-CANARY",
+            region="us-east-2",
+            client_id="cid",
+            cognito_idp_client=client,
+        )
+
+    assert type(caught.value) is PlaceInvalidAuthError
+    message = str(caught.value)
+    assert "unexpected Cognito response" in message
+    assert challenge in message
+    assert "SESSION-CANARY" not in message
+    assert "REFRESH-TOKEN-CANARY" not in message
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+def test_refresh_tokens_translates_missing_authentication_result_to_place_auth_error() -> (
+    None
+):
+    client = _FakeIdpClient(initiate={})
+
+    with pytest.raises(PlaceAuthError) as caught:
+        _ = refresh_tokens("refresh-abc", client_id="cid", cognito_idp_client=client)
+
+    assert type(caught.value) is PlaceAuthError
+    message = str(caught.value)
+    assert "unexpected Cognito response" in message
+    assert "AuthenticationResult" in message
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize(
+    ("authentication_result", "missing"),
+    (
+        ({}, "AccessToken"),
+        ({"IdToken": "ID-TOKEN-CANARY"}, "AccessToken"),
+        ({"AccessToken": "ACCESS-TOKEN-CANARY"}, "IdToken"),
+        ({"AccessToken": None, "IdToken": "ID-TOKEN-CANARY"}, "AccessToken"),
+        ({"AccessToken": "ACCESS-TOKEN-CANARY", "IdToken": 42}, "IdToken"),
+    ),
+)
+def test_refresh_tokens_rejects_partial_authentication_result(
+    authentication_result: Any, missing: str
+) -> None:
+    """A truncated AuthenticationResult must not leak a bare KeyError downstream."""
+    client = _FakeIdpClient(initiate={"AuthenticationResult": authentication_result})
+
+    with pytest.raises(PlaceAuthError) as caught:
+        _ = refresh_tokens(
+            "REFRESH-TOKEN-CANARY", client_id="cid", cognito_idp_client=client
+        )
+
+    assert type(caught.value) is PlaceAuthError
+    message = str(caught.value)
+    assert "unexpected Cognito response" in message
+    assert missing in message
+    assert "TOKEN-CANARY" not in message
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+def test_gateway_refresh_exposes_partial_authentication_result_as_place_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The seam must surface a truncated refresh result as PlaceAuthError, not KeyError."""
+    client = _FakeIdpClient(initiate={"AuthenticationResult": {}})
+    monkeypatch.setattr(srp_auth.boto3, "client", lambda *a, **kw: client)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(PlaceAuthError) as caught:
+        _ = gateway.refresh("REFRESH-TOKEN-CANARY")
+
+    assert type(caught.value) is PlaceAuthError
+    assert "AccessToken" in str(caught.value)
+    assert "REFRESH-TOKEN-CANARY" not in str(caught.value)
+
+
+def test_gateway_refresh_exposes_challenge_response_as_invalid_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refresh challenge must reach consumers as terminal, not retryable."""
+    client = _FakeIdpClient(
+        initiate={"ChallengeName": "SMS_MFA", "Session": "SESSION-CANARY"}
+    )
+    monkeypatch.setattr(srp_auth.boto3, "client", lambda *a, **kw: client)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(PlaceInvalidAuthError) as caught:
+        _ = gateway.refresh("REFRESH-TOKEN-CANARY")
+
+    assert type(caught.value) is PlaceInvalidAuthError
+    assert "unexpected Cognito response" in str(caught.value)
+    assert "SESSION-CANARY" not in str(caught.value)
+    assert "REFRESH-TOKEN-CANARY" not in str(caught.value)
+
+
+class _PartialIdentityClient:
+    """Cognito-identity fake returning caller-supplied (possibly malformed) payloads."""
+
+    def __init__(self, id_response: Any, creds_response: Any) -> None:
+        self._id_response = id_response
+        self._creds_response = creds_response
+
+    def get_id(self, **_kwargs: Any) -> Any:
+        return self._id_response
+
+    def get_credentials_for_identity(self, **_kwargs: Any) -> Any:
+        return self._creds_response
+
+
+@pytest.mark.parametrize(
+    ("id_response", "creds_response", "missing"),
+    (
+        ({}, {"Credentials": {}}, "IdentityId"),
+        ({"IdentityId": "id-1"}, {}, "Credentials"),
+        (
+            {"IdentityId": "id-1"},
+            {"Credentials": {"SecretKey": "SECRET-CANARY", "SessionToken": "t"}},
+            "AccessKeyId",
+        ),
+        (
+            {"IdentityId": "id-1"},
+            {"Credentials": {"AccessKeyId": "AKIA", "SessionToken": "t"}},
+            "SecretKey",
+        ),
+        (
+            {"IdentityId": "id-1"},
+            {"Credentials": {"AccessKeyId": "AKIA", "SecretKey": "SECRET-CANARY"}},
+            "SessionToken",
+        ),
+        ({"IdentityId": 42}, {"Credentials": {}}, "IdentityId"),
+        (
+            {"IdentityId": "id-1"},
+            {
+                "Credentials": {
+                    "AccessKeyId": None,
+                    "SecretKey": "s",
+                    "SessionToken": "t",
+                }
+            },
+            "AccessKeyId",
+        ),
+        (
+            {"IdentityId": "id-1"},
+            {
+                "Credentials": {
+                    "AccessKeyId": "AKIA",
+                    "SecretKey": 42,
+                    "SessionToken": "t",
+                }
+            },
+            "SecretKey",
+        ),
+        (
+            {"IdentityId": "id-1"},
+            {
+                "Credentials": {
+                    "AccessKeyId": "AKIA",
+                    "SecretKey": "s",
+                    "SessionToken": "",
+                }
+            },
+            "SessionToken",
+        ),
+    ),
+)
+def test_get_iot_credentials_translates_malformed_identity_response(
+    id_response: Any, creds_response: Any, missing: str
+) -> None:
+    client = _PartialIdentityClient(id_response, creds_response)
+
+    with pytest.raises(PlaceAuthError) as caught:
+        _ = get_iot_credentials("id-token", "access-token", identity_client=client)
+
+    assert type(caught.value) is PlaceAuthError
+    message = str(caught.value)
+    assert "unexpected Cognito response" in message
+    assert missing in message
+    assert "SECRET-CANARY" not in message
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+
+
+def test_gateway_iot_credentials_exposes_malformed_response_as_place_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _PartialIdentityClient({"IdentityId": "id-1"}, {"Credentials": {}})
+    monkeypatch.setattr(srp_auth.boto3, "client", lambda *a, **kw: client)
+    gateway = RealCognitoGateway(PlaceConfig())
+
+    with pytest.raises(PlaceAuthError) as caught:
+        _ = gateway.iot_credentials("ID-TOKEN-CANARY", "ACCESS-TOKEN-CANARY")
+
+    assert type(caught.value) is PlaceAuthError
+    assert "AccessKeyId" in str(caught.value)
+    assert "TOKEN-CANARY" not in str(caught.value)

@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from place.auth import srp_auth
 from place.auth.cognito_auth import CognitoAuth
 from place.config import PlaceConfig
 from place.exceptions import (
@@ -1033,3 +1034,82 @@ async def test_mfa_login_persists_only_after_completion() -> None:
     await auth.submit_mfa("123456")
 
     assert cache.data == {"username": "alice", "refresh_token": "rt-mfa"}
+
+
+class _TruncatedInitiateClient:
+    """cognito-idp fake that answers initiate_auth with a caller-supplied payload."""
+
+    def __init__(self, initiate: dict[str, Any]) -> None:
+        self._initiate = initiate
+
+    def initiate_auth(self, **_kwargs: Any) -> dict[str, Any]:
+        return self._initiate
+
+
+class _TruncatedRefreshGateway(FakeGateway):
+    """Gateway whose refresh runs the real srp_auth parser over a truncated result."""
+
+    def __init__(self, initiate: dict[str, Any]) -> None:
+        super().__init__(login={"AuthenticationResult": _auth_result()})
+        self._initiate = initiate
+
+    def refresh(self, refresh_token: str) -> dict[str, Any]:
+        self.refresh_calls += 1
+        self.refresh_args.append(refresh_token)
+        return srp_auth.refresh_tokens(
+            refresh_token,
+            client_id="cid",
+            cognito_idp_client=_TruncatedInitiateClient(self._initiate),
+        )
+
+
+class _ChallengeRefreshGateway(FakeGateway):
+    """Gateway whose refresh runs the real parser over a challenge-shaped reply."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            login={"AuthenticationResult": _auth_result(AccessToken="srp-a")}
+        )
+
+    def refresh(self, refresh_token: str) -> dict[str, Any]:
+        self.refresh_calls += 1
+        self.refresh_args.append(refresh_token)
+        return srp_auth.refresh_tokens(
+            refresh_token,
+            client_id="cid",
+            cognito_idp_client=_TruncatedInitiateClient(
+                {"ChallengeName": "SMS_MFA", "Session": "SESSION-CANARY"}
+            ),
+        )
+
+
+async def test_cached_login_falls_back_to_srp_when_refresh_returns_challenge() -> None:
+    """A refresh challenge cannot be answered headlessly, so cached login must re-prompt."""
+    gw = _ChallengeRefreshGateway()
+    cache = FakeCache({"username": "alice", "refresh_token": "rt-cached"})
+    auth = CognitoAuth(
+        PlaceConfig(), websession=object(), gateway=gw, token_cache=cache
+    )  # pyright: ignore[reportArgumentType]
+
+    await auth.authenticate("alice", "pw")
+
+    assert gw.refresh_calls == 1
+    assert gw.login_calls == 1  # fell back to SRP instead of reusing the challenge loop
+    assert gw.login_args == [("alice", "pw")]
+    assert await auth.async_get_access_token() == "srp-a"
+
+
+async def test_truncated_refresh_result_surfaces_as_place_auth_error() -> None:
+    """A partial AuthenticationResult must fail typed without corrupting auth state."""
+    gw = _TruncatedRefreshGateway({"AuthenticationResult": {}})
+    auth = CognitoAuth(PlaceConfig(), websession=object(), gateway=gw)  # pyright: ignore[reportArgumentType]
+    await auth.authenticate("alice", "pw")
+    auth._access_token_expiry = 0.0  # pyright: ignore[reportPrivateUsage]
+    old_state = vars(auth).copy()
+
+    with pytest.raises(PlaceAuthError) as caught:
+        _ = await auth.async_get_access_token()
+
+    assert type(caught.value) is PlaceAuthError
+    assert "AccessToken" in str(caught.value)
+    assert vars(auth) == old_state

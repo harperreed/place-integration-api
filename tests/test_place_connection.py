@@ -12,6 +12,7 @@ from types import TracebackType
 import pytest
 from aiomqtt import MqttError
 
+from place.auth import srp_auth
 from place.config import PlaceConfig
 from place.exceptions import (
     PlaceAuthError,
@@ -767,3 +768,108 @@ async def test_stopped_mqtt_failure_does_not_notify_or_backoff() -> None:
 
     assert seen == []
     assert slept == []
+
+
+class _MalformedIdentityClient:
+    """Cognito-identity fake whose responses omit required fields."""
+
+    def get_id(self, **_kwargs: object) -> dict[str, object]:
+        return {}
+
+    def get_credentials_for_identity(self, **_kwargs: object) -> dict[str, object]:
+        return {}
+
+
+class UnexpectedResponseAuth:
+    """Fails its first fetch with a real srp_auth parse error, then succeeds."""
+
+    def __init__(self) -> None:
+        self.calls: int = 0
+
+    async def async_get_iot_credentials(self) -> Credentials:
+        self.calls += 1
+        if self.calls == 1:
+            srp_auth.get_iot_credentials(
+                "id-token", "access-token", identity_client=_MalformedIdentityClient()
+            )
+        return _creds()
+
+
+class _ChallengeInitiateClient:
+    """cognito-idp fake that answers a refresh with a challenge instead of tokens."""
+
+    def initiate_auth(self, **_kwargs: object) -> dict[str, object]:
+        return {"ChallengeName": "SMS_MFA", "Session": "SESSION-CANARY"}
+
+
+class ChallengeRefreshAuth:
+    """Fails every credential fetch with a real challenge-shaped parse error."""
+
+    def __init__(self) -> None:
+        self.calls: int = 0
+
+    async def async_get_iot_credentials(self) -> Credentials:
+        self.calls += 1
+        srp_auth.refresh_tokens(
+            "REFRESH-TOKEN-CANARY",
+            client_id="cid",
+            cognito_idp_client=_ChallengeInitiateClient(),
+        )
+        return _creds()
+
+
+async def test_refresh_challenge_ends_connection_instead_of_retrying_forever() -> None:
+    """A challenge needs user action, so it must stop the loop rather than back off."""
+    seen: list[PlaceError] = []
+    slept: list[float] = []
+    auth = ChallengeRefreshAuth()
+
+    conn = PlaceConnection(
+        PlaceConfig(reconnect_min_sec=1.0, reconnect_max_sec=60.0),
+        auth,
+        transport_factory=lambda cfg, creds: pytest.fail(
+            "transport must not be created after a terminal auth failure"
+        ),
+        on_message=lambda topic, payload: None,
+        on_error=seen.append,
+        sleep=lambda delay: _noop_sleep(slept, delay),
+    )
+
+    await conn.run()
+
+    assert auth.calls == 1  # no endless retry of the same unanswerable challenge
+    assert slept == []
+    assert len(seen) == 1
+    assert isinstance(seen[0], PlaceInvalidAuthError)
+    assert "unexpected Cognito response" in str(seen[0])
+
+
+async def test_unexpected_cognito_response_backs_off_and_retries() -> None:
+    """An unexpected response shape must reach the loop as PlaceAuthError, not KeyError."""
+    subs: list[str] = []
+    published: list[tuple[str, bytes]] = []
+    slept: list[float] = []
+    seen: list[PlaceError] = []
+    auth = UnexpectedResponseAuth()
+
+    def factory(cfg: PlaceConfig, creds: Credentials) -> MqttTransport:
+        _ = cfg
+        _ = creds
+        return ScriptedTransport([], subs, published, conn.stop)
+
+    conn = PlaceConnection(
+        PlaceConfig(reconnect_min_sec=1.0, reconnect_max_sec=60.0),
+        auth,
+        transport_factory=factory,
+        on_message=lambda topic, payload: None,
+        on_error=seen.append,
+        sleep=lambda delay: _noop_sleep(slept, delay),
+    )
+
+    await conn.run()
+
+    assert auth.calls == 2  # survived the parse failure and retried, not killed
+    assert slept == [1.0]  # went through the backoff path rather than escaping run()
+    assert len(seen) == 1
+    assert isinstance(seen[0], PlaceAuthError)
+    assert "unexpected Cognito response" in str(seen[0])
